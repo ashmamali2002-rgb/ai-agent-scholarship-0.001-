@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scholarship AI Agent - Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #2c3e50;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+        
+        .nav {
+            background: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .nav a {
+            color: #667eea;
+            text-decoration: none;
+            margin-right: 2rem;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .nav a:hover {
+            background: #f0f4ff;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            text-align: center;
+            transition: transform 0.3s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-number {
+            font-size: 3rem;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-label {
+            color: #718096;
+            font-size: 1.1rem;
+        }
+        
+        .section {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+        }
+        
+        .section h2 {
+            color: #2d3748;
+            margin-bottom: 1.5rem;
+            font-size: 1.8rem;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 0.5rem;
+            display: inline-block;
+        }
+        
+        .scholarship-list {
+            list-style: none;
+        }
+        
+        .scholarship-item {
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: all 0.3s;
+        }
+        
+        .scholarship-item:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+        }
+        
+        .scholarship-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .scholarship-title {
+            font-size: 1.4rem;
+            color: #2d3748;
+            font-weight: bold;
+        }
+        
+        .match-score {
+            background: #48bb78;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+        
+        .match-score.medium {
+            background: #ed8936;
+        }
+        
+        .match-score.low {
+            background: #f56565;
+        }
+        
+        .scholarship-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .detail-item {
+            color: #4a5568;
+        }
+        
+        .detail-item strong {
+            color: #2d3748;
+        }
+        
+        .btn {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            text-decoration: none;
+            font-weight: 600;
+            transition: background 0.3s;
+            margin-right: 0.5rem;
+        }
+        
+        .btn:hover {
+            background: #5a67d8;
+        }
+        
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #2d3748;
+        }
+        
+        .btn-secondary:hover {
+            background: #cbd5e0;
+        }
+        
+        .actions {
+            margin-top: 1rem;
+        }
+        
+        .user-info {
+            background: #ebf4ff;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+        
+        .user-info h3 {
+            color: #2d3748;
+            margin-bottom: 0.5rem;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #718096;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #e2e8f0;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎓 Scholarship AI Agent</h1>
+        <p>Your personalized scholarship discovery and application assistant</p>
+    </div>
+    
+    <div class="nav">
+        <a href="/">Dashboard</a>
+        <a href="/search">Search Scholarships</a>
+        <a href="/applications">My Applications</a>
+        <a href="/profile">Profile</a>
+        <a href="#" onclick="sendDigest(); return false;">Send Email Digest</a>
+    </div>
+    
+    <div class="container">
+        {% if user %}
+        <div class="user-info">
+            <h3>Welcome back, {{ user[1] }}!</h3>
+            <p><strong>Profile:</strong> {{ user[6] }} from {{ user[7] }} | CGPA: {{ user[8] }} | Nationality: {{ user[4] }}</p>
+            <p><strong>Research Publications:</strong> {{ user[10] }} papers</p>
+        </div>
+        {% endif %}
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number">{{ stats.found }}</div>
+                <div class="stat-label">Scholarships Found</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">{{ stats.applied }}</div>
+                <div class="stat-label">Applications Submitted</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">{{ stats.total_applications }}</div>
+                <div class="stat-label">Total Applications</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">{{ stats.total_searches }}</div>
+                <div class="stat-label">Searches Performed</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>📋 Top Matching Scholarships</h2>
+            
+            {% if scholarships %}
+            <ul class="scholarship-list">
+                {% for scholarship in scholarships[:10] %}
+                <li class="scholarship-item">
+                    <div class="scholarship-header">
+                        <div class="scholarship-title">{{ scholarship[1] }}</div>
+                        <div class="match-score {% if scholarship[10] >= 80 %}{% elif scholarship[10] >= 60 %}medium{% else %}low{% endif %}">
+                            {{ "%.1f"|format(scholarship[10]) if scholarship[10] else 0 }}% Match
+                        </div>
+                    </div>
+                    
+                    <div class="scholarship-details">
+                        <div class="detail-item"><strong>University:</strong> {{ scholarship[2] or 'Not specified' }}</div>
+                        <div class="detail-item"><strong>Country:</strong> {{ scholarship[3] or 'Not specified' }}</div>
+                        <div class="detail-item"><strong>Field:</strong> {{ scholarship[4] or 'Not specified' }}</div>
+                        <div class="detail-item"><strong>Deadline:</strong> {{ scholarship[5] or 'Not specified' }}</div>
+                        <div class="detail-item"><strong>Funding:</strong> {{ scholarship[6] or 'Not specified' }}</div>
+                    </div>
+                    
+                    <div class="actions">
+                        <a href="/scholarship/{{ scholarship[0] }}" class="btn">View Details</a>
+                        <button onclick="analyzeScholarship({{ scholarship[0] }})" class="btn btn-secondary">AI Analysis</button>
+                        <form action="/apply/{{ scholarship[0] }}" method="POST" style="display: inline;">
+                            <input type="hidden" name="notes" value="Application initiated via AI Agent">
+                            <button type="submit" class="btn" onclick="return confirm('Submit application for this scholarship?')">Apply Now</button>
+                        </form>
+                    </div>
+                    
+                    <div id="analysis-{{ scholarship[0] }}" style="margin-top: 1rem; display: none; background: #f7fafc; padding: 1rem; border-radius: 6px;"></div>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <div class="loading">
+                <p>No scholarships found yet. Start searching!</p>
+                <a href="/search" class="btn">Search Now</a>
+            </div>
+            {% endif %}
+        </div>
+        
+        <div class="section">
+            <h2>🚀 Quick Actions</h2>
+            <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                <a href="/search" class="btn">🔍 Search Scholarships</a>
+                <button onclick="sendDigest()" class="btn btn-secondary">📧 Send Email Digest</button>
+                <a href="/applications" class="btn btn-secondary">📝 View Applications</a>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        async function analyzeScholarship(id) {
+            const analysisDiv = document.getElementById(`analysis-${id}`);
+            analysisDiv.style.display = 'block';
+            analysisDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Analyzing with AI...</p></div>';
+            
+            try {
+                const response = await fetch(`/analyze/${id}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    analysisDiv.innerHTML = `<p style="color: #e53e3e;">Error: ${data.error}</p>`;
+                } else {
+                    let html = '<h4 style="color: #2d3748; margin-bottom: 0.5rem;">AI Analysis Results</h4>';
+                    html += `<p><strong>Match Score:</strong> ${data.match_score || 'N/A'}/100</p>`;
+                    html += `<p><strong>Recommendation:</strong> ${data.recommendation || 'N/A'}</p>`;
+                    
+                    if (data.strengths && data.strengths.length > 0) {
+                        html += '<p><strong>Strengths:</strong></p><ul>';
+                        data.strengths.forEach(s => html += `<li>${s}</li>`);
+                        html += '</ul>';
+                    }
+                    
+                    if (data.weaknesses && data.weaknesses.length > 0) {
+                        html += '<p><strong>Areas to Address:</strong></p><ul>';
+                        data.weaknesses.forEach(w => html += `<li>${w}</li>`);
+                        html += '</ul>';
+                    }
+                    
+                    if (data.application_strategy) {
+                        html += `<p><strong>Strategy:</strong> ${data.application_strategy}</p>`;
+                    }
+                    
+                    analysisDiv.innerHTML = html;
+                }
+            } catch (error) {
+                analysisDiv.innerHTML = `<p style="color: #e53e3e;">Error analyzing scholarship: ${error.message}</p>`;
+            }
+        }
+        
+        async function sendDigest() {
+            try {
+                const response = await fetch('/send-digest');
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    alert('✅ Email digest sent successfully!');
+                } else {
+                    alert('❌ Failed to send digest: ' + data.message);
+                }
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>

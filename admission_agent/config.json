@@ -1,0 +1,25 @@
+{
+  "email": {
+    "imap_server": "imap.gmail.com",
+    "email_address": "your_email@gmail.com",
+    "password": "your_app_password"
+  },
+  "application_preferences": {
+    "field_of_study": ["Computer Science", "AI", "Machine Learning"],
+    "degree_level": "PhD",
+    "preferred_universities": [],
+    "application_deadline_buffer_days": 7
+  },
+  "professor_contact": {
+    "template": "Dear Professor {name},\n\nI hope this message finds you well. I am writing to inform you that I have recently applied to the {program} program at {university}. Your research in {research_area} aligns closely with my interests in {my_interests}.\n\nI would be honored to discuss potential opportunities to work under your supervision.\n\nBest regards,\n{my_name}",
+    "my_name": "Your Name",
+    "my_interests": "AI and Machine Learning"
+  },
+  "application_data": {
+    "cv_path": "path/to/your/cv.pdf",
+    "statement_path": "path/to/statement.pdf",
+    "transcripts_path": "path/to/transcripts.pdf",
+    "gpa": "3.8",
+    "gre_score": "320"
+  }
+}

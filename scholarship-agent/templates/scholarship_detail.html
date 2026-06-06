@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scholarship Details - AI Agent</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #2c3e50;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .nav {
+            background: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .nav a {
+            color: #667eea;
+            text-decoration: none;
+            margin-right: 2rem;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .nav a:hover {
+            background: #f0f4ff;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+        
+        .section {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+        }
+        
+        .section h2 {
+            color: #2d3748;
+            margin-bottom: 1rem;
+            font-size: 1.8rem;
+        }
+        
+        .detail-row {
+            display: flex;
+            padding: 1rem 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .detail-label {
+            font-weight: 600;
+            color: #4a5568;
+            width: 200px;
+            flex-shrink: 0;
+        }
+        
+        .detail-value {
+            color: #2d3748;
+            flex: 1;
+        }
+        
+        .btn {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            text-decoration: none;
+            font-weight: 600;
+            transition: background 0.3s;
+            margin-right: 0.5rem;
+        }
+        
+        .btn:hover {
+            background: #5a67d8;
+        }
+        
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #2d3748;
+        }
+        
+        .btn-secondary:hover {
+            background: #cbd5e0;
+        }
+        
+        .btn-success {
+            background: #48bb78;
+        }
+        
+        .btn-success:hover {
+            background: #38a169;
+        }
+        
+        .document-generator {
+            background: #f7fafc;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+        }
+        
+        .generated-doc {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 6px;
+            border: 1px solid #e2e8f0;
+            margin-top: 1rem;
+            white-space: pre-wrap;
+            font-family: Georgia, serif;
+            line-height: 1.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📋 Scholarship Details</h1>
+    </div>
+    
+    <div class="nav">
+        <a href="/">Dashboard</a>
+        <a href="/search">Search Scholarships</a>
+        <a href="/applications">My Applications</a>
+        <a href="/profile">Profile</a>
+    </div>
+    
+    <div class="container">
+        <div class="section">
+            <h2>{{ scholarship[1] }}</h2>
+            
+            <div class="detail-row">
+                <div class="detail-label">University:</div>
+                <div class="detail-value">{{ scholarship[2] or 'Not specified' }}</div>
+            </div>
+            
+            <div class="detail-row">
+                <div class="detail-label">Country:</div>
+                <div class="detail-value">{{ scholarship[3] or 'Not specified' }}</div>
+            </div>
+            
+            <div class="detail-row">
+                <div class="detail-label">Field of Study:</div>
+                <div class="detail-value">{{ scholarship[4] or 'Not specified' }}</div>
+            </div>
+            
+            <div class="detail-row">
+                <div class="detail-label">Deadline:</div>
+                <div class="detail-value">{{ scholarship[5] or 'Not specified' }}</div>
+            </div>
+            
+            <div class="detail-row">
+                <div class="detail-label">Funding Type:</div>
+                <div class="detail-value">{{ scholarship[6] or 'Not specified' }}</div>
+            </div>
+            
+            <div class="detail-row">
+                <div class="detail-label">Requirements:</div>
+                <div class="detail-value">{{ scholarship[7] or 'Not specified' }}</div>
+            </div>
+            
+            <div class="detail-row">
+                <div class="detail-label">Match Score:</div>
+                <div class="detail-value">
+                    <strong style="color: {% if scholarship[10] >= 80 %}#48bb78{% elif scholarship[10] >= 60 %}#ed8936{% else %}#f56565{% endif %};">
+                        {{ "%.1f"|format(scholarship[10]) if scholarship[10] else 0 }}%
+                    </strong>
+                </div>
+            </div>
+            
+            <div class="detail-row">
+                <div class="detail-label">Application URL:</div>
+                <div class="detail-value">
+                    {% if scholarship[8] %}
+                    <a href="{{ scholarship[8] }}" target="_blank" style="color: #667eea;">{{ scholarship[8] }}</a>
+                    {% else %}
+                    Not specified
+                    {% endif %}
+                </div>
+            </div>
+            
+            <div style="margin-top: 2rem;">
+                <a href="{{ scholarship[8] or '#' }}" target="_blank" class="btn">🌐 Visit Application Page</a>
+                <button onclick="analyzeScholarship()" class="btn btn-secondary">🤖 AI Analysis</button>
+                <form action="/apply/{{ scholarship[0] }}" method="POST" style="display: inline;">
+                    <input type="hidden" name="notes" value="Application via AI Agent">
+                    <button type="submit" class="btn btn-success" onclick="return confirm('Submit application?')">✓ Apply Now</button>
+                </form>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>📝 Generate Application Documents</h2>
+            <p style="color: #4a5568; margin-bottom: 1rem;">
+                Let our AI create tailored documents for this scholarship application.
+            </p>
+            
+            <div class="document-generator">
+                <button onclick="generateDocument('motivation_letter')" class="btn">Motivation Letter</button>
+                <button onclick="generateDocument('research_proposal_outline')" class="btn btn-secondary">Research Proposal</button>
+                <button onclick="generateDocument('cv_summary')" class="btn btn-secondary">CV Summary</button>
+                
+                <div id="generated-document" style="display: none;"></div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>💡 Next Steps</h2>
+            <ol style="margin-left: 1.5rem; line-height: 2; color: #4a5568;">
+                <li>Review the scholarship requirements carefully</li>
+                <li>Use AI to generate your motivation letter and other documents</li>
+                <li>Gather required documents (transcripts, recommendation letters, etc.)</li>
+                <li>Click "Apply Now" to submit your application</li>
+                <li>Check your email for confirmation</li>
+            </ol>
+        </div>
+    </div>
+    
+    <script>
+        const scholarshipId = {{ scholarship[0] }};
+        
+        async function analyzeScholarship() {
+            try {
+                const response = await fetch(`/analyze/${scholarshipId}`);
+                const data = await response.json();
+                
+                let message = 'AI Analysis Results:\n\n';
+                message += `Match Score: ${data.match_score || 'N/A'}/100\n`;
+                message += `Recommendation: ${data.recommendation || 'N/A'}\n\n`;
+                
+                if (data.strengths && data.strengths.length > 0) {
+                    message += 'Strengths:\n' + data.strengths.map(s => '- ' + s).join('\n') + '\n\n';
+                }
+                
+                if (data.weaknesses && data.weaknesses.length > 0) {
+                    message += 'Areas to Address:\n' + data.weaknesses.map(w => '- ' + w).join('\n') + '\n\n';
+                }
+                
+                if (data.application_strategy) {
+                    message += 'Strategy: ' + data.application_strategy;
+                }
+                
+                alert(message);
+            } catch (error) {
+                alert('Error analyzing scholarship: ' + error.message);
+            }
+        }
+        
+        async function generateDocument(docType) {
+            const docDiv = document.getElementById('generated-document');
+            docDiv.style.display = 'block';
+            docDiv.innerHTML = '<p>Loading...</p>';
+            
+            try {
+                const response = await fetch('/generate-document', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        scholarship_id: scholarshipId,
+                        doc_type: docType
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.document) {
+                    docDiv.innerHTML = `
+                        <h3 style="color: #2d3748; margin-bottom: 1rem;">Generated ${docType.replace('_', ' ').toUpperCase()}</h3>
+                        <div class="generated-doc">${data.document}</div>
+                        <button onclick="copyToClipboard('${data.document.replace(/'/g, "\\'")}')" class="btn btn-secondary" style="margin-top: 1rem;">📋 Copy to Clipboard</button>
+                    `;
+                } else {
+                    docDiv.innerHTML = '<p style="color: #e53e3e;">Error generating document</p>';
+                }
+            } catch (error) {
+                docDiv.innerHTML = '<p style="color: #e53e3e;">Error: ' + error.message + '</p>';
+            }
+        }
+        
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Copied to clipboard!');
+            }).catch(err => {
+                alert('Failed to copy: ' + err);
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Profile - Scholarship AI Agent</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #2c3e50;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .nav {
+            background: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .nav a {
+            color: #667eea;
+            text-decoration: none;
+            margin-right: 2rem;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .nav a:hover {
+            background: #f0f4ff;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+        
+        .section {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+        }
+        
+        .section h2 {
+            color: #2d3748;
+            margin-bottom: 1.5rem;
+            font-size: 1.8rem;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 0.5rem;
+        }
+        
+        .profile-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+        
+        .profile-item {
+            background: #f7fafc;
+            padding: 1.5rem;
+            border-radius: 8px;
+        }
+        
+        .profile-label {
+            font-size: 0.9rem;
+            color: #718096;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .profile-value {
+            font-size: 1.1rem;
+            color: #2d3748;
+            font-weight: 600;
+        }
+        
+        .career-goal {
+            background: #ebf4ff;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            line-height: 1.8;
+            color: #2d3748;
+        }
+        
+        .preferences-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+        
+        .preference-tag {
+            background: #667eea;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👤 My Profile</h1>
+        <p>Your academic and scholarship profile</p>
+    </div>
+    
+    <div class="nav">
+        <a href="/">Dashboard</a>
+        <a href="/search">Search Scholarships</a>
+        <a href="/applications">My Applications</a>
+        <a href="/profile">Profile</a>
+    </div>
+    
+    <div class="container">
+        <div class="section">
+            <h2>Personal Information</h2>
+            
+            {% if user %}
+            <div class="profile-grid">
+                <div class="profile-item">
+                    <div class="profile-label">Full Name</div>
+                    <div class="profile-value">{{ user[1] }}</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">Email Address</div>
+                    <div class="profile-value">{{ user[2] }}</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">Phone Number</div>
+                    <div class="profile-value">{{ user[3] }}</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">Nationality</div>
+                    <div class="profile-value">{{ user[4] }}</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">Age</div>
+                    <div class="profile-value">{{ user[5] }} years</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">Financial Status</div>
+                    <div class="profile-value">{{ user[9] }}</div>
+                </div>
+            </div>
+            
+            <h2 style="margin-top: 2rem;">Academic Background</h2>
+            
+            <div class="profile-grid">
+                <div class="profile-item">
+                    <div class="profile-label">Current Qualification</div>
+                    <div class="profile-value">{{ user[6] }}</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">University</div>
+                    <div class="profile-value">{{ user[7] }}</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">CGPA</div>
+                    <div class="profile-value">{{ user[8] }}</div>
+                </div>
+                
+                <div class="profile-item">
+                    <div class="profile-label">Research Publications</div>
+                    <div class="profile-value">{{ user[10] }} papers</div>
+                </div>
+            </div>
+            
+            <h2 style="margin-top: 2rem;">Preferred Master's Fields</h2>
+            <div class="preferences-list">
+                {% for field in user[11].split(',')[:15] %}
+                <span class="preference-tag">{{ field.strip() }}</span>
+                {% endfor %}
+                {% if user[11].split(',')|length > 15 %}
+                <span class="preference-tag">+{{ user[11].split(',')|length - 15 }} more</span>
+                {% endif %}
+            </div>
+            
+            <h2 style="margin-top: 2rem;">Target Countries</h2>
+            <div class="preferences-list">
+                {% for country in user[12].split(',') %}
+                <span class="preference-tag">{{ country.strip() }}</span>
+                {% endfor %}
+            </div>
+            
+            <h2 style="margin-top: 2rem;">Career Goal</h2>
+            <div class="career-goal">
+                {{ user[13] or 'Not specified' }}
+            </div>
+            
+            {% else %}
+            <p>No profile information found.</p>
+            {% endif %}
+        </div>
+        
+        <div class="section">
+            <h2>📌 Profile Tips</h2>
+            <ul style="margin-left: 1.5rem; line-height: 2; color: #4a5568;">
+                <li>Keep your profile updated with latest achievements</li>
+                <li>Add new research publications as they are published</li>
+                <li>Update your career goals as they evolve</li>
+                <li>The more complete your profile, the better scholarship matches you'll receive</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>
