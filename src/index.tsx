@@ -8,8 +8,25 @@ import applicationRoutes from "./routes/applications";
 import agentRoutes from "./routes/agent";
 import professorRoutes from "./routes/professors";
 
-type Bindings = { DB: D1Database };
+type Bindings = {
+  DB: D1Database;
+  GROQ_API_KEY?: string;
+  SERPER_API_KEY?: string;
+  JINA_API_KEY?: string;
+  RESEND_API_KEY?: string;
+};
 const app = new Hono<{ Bindings: Bindings }>();
+
+// ── Inject Cloudflare env secrets into globalThis for lib modules ─
+// wrangler injects .dev.vars and wrangler secrets into c.env, not globalThis
+// This middleware bridges them so lib functions (ai.ts, email.ts, search.ts) can read them
+app.use("*", async (c, next) => {
+  if (c.env.GROQ_API_KEY)   (globalThis as any).GROQ_API_KEY   = c.env.GROQ_API_KEY;
+  if (c.env.SERPER_API_KEY) (globalThis as any).SERPER_API_KEY = c.env.SERPER_API_KEY;
+  if (c.env.JINA_API_KEY)   (globalThis as any).JINA_API_KEY   = c.env.JINA_API_KEY;
+  if (c.env.RESEND_API_KEY) (globalThis as any).RESEND_API_KEY = c.env.RESEND_API_KEY;
+  await next();
+});
 
 app.use("/api/*", cors());
 app.use("/static/*", serveStatic({ root: "./" }));
