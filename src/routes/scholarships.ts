@@ -9,7 +9,7 @@ const scholarships = new Hono<{ Bindings: Bindings }>();
 // ── Get all scholarships from DB ─────────────────────────────
 scholarships.get("/", async (c) => {
   try {
-    const { status, country, limit = "50", page = "1" } = c.req.query();
+    const { status, country, limit = "50", page = "1", trust, funded } = c.req.query();
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
     let query = "SELECT * FROM scholarships WHERE is_expired = 0 OR is_expired IS NULL";
@@ -17,6 +17,8 @@ scholarships.get("/", async (c) => {
 
     if (status) { query += " AND status = ?"; params.push(status); }
     if (country) { query += " AND country LIKE ?"; params.push(`%${country}%`); }
+    if (trust) { query += " AND source_trust_level = ?"; params.push(trust); }
+    if (funded === "1") { query += " AND is_fully_funded = 1"; }
 
     query += " ORDER BY match_score DESC, created_at DESC LIMIT ? OFFSET ?";
     params.push(parseInt(limit), offset);
@@ -37,7 +39,7 @@ scholarships.get("/", async (c) => {
   }
 });
 
-// ── Get single scholarship ────────────────────────────────────
+// ── Stats overview ────────────────────────────────────────────
 scholarships.get("/stats/overview", async (c) => {
   try {
     const total = await c.env.DB.prepare(
@@ -52,8 +54,13 @@ scholarships.get("/stats/overview", async (c) => {
     const recent = await c.env.DB.prepare(
       "SELECT COUNT(*) as count FROM scholarships WHERE date(created_at) = date('now')"
     ).first() as any;
+    const officialCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM scholarships WHERE source_trust_level = 'official' AND (is_expired = 0 OR is_expired IS NULL)"
+    ).first() as any;
     const topScholarships = await c.env.DB.prepare(
-      "SELECT title, organization, country, match_score, deadline, url FROM scholarships WHERE is_expired = 0 OR is_expired IS NULL ORDER BY match_score DESC LIMIT 5"
+      `SELECT title, organization, country, match_score, success_probability, deadline, url, 
+       is_fully_funded, source_trust_level, deadline_type
+       FROM scholarships WHERE is_expired = 0 OR is_expired IS NULL ORDER BY match_score DESC LIMIT 5`
     ).all();
 
     return c.json({
@@ -63,10 +70,47 @@ scholarships.get("/stats/overview", async (c) => {
         fully_funded: fullyFunded?.count || 0,
         high_match: highMatch?.count || 0,
         found_today: recent?.count || 0,
+        official_count: officialCount?.count || 0,
       },
       top_scholarships: topScholarships.results,
       current_date: CURRENT_DATE,
     });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ── Deduplicate scholarships ──────────────────────────────────
+scholarships.post("/deduplicate", async (c) => {
+  try {
+    // Remove entries where title = 'Unknown Scholarship' except first one
+    await c.env.DB.prepare(`
+      DELETE FROM scholarships 
+      WHERE title = 'Unknown Scholarship' 
+      AND id NOT IN (SELECT MIN(id) FROM scholarships WHERE title = 'Unknown Scholarship')
+    `).run();
+
+    // Remove duplicate titles (keep highest match_score)
+    const dupes = await c.env.DB.prepare(`
+      SELECT title, COUNT(*) as cnt 
+      FROM scholarships 
+      GROUP BY title 
+      HAVING cnt > 1
+    `).all() as any;
+
+    let removed = 0;
+    for (const dupe of (dupes.results || [])) {
+      const toDelete = await c.env.DB.prepare(`
+        SELECT id FROM scholarships WHERE title = ? ORDER BY match_score DESC LIMIT -1 OFFSET 1
+      `).bind(dupe.title).all() as any;
+      for (const row of (toDelete.results || [])) {
+        await c.env.DB.prepare("DELETE FROM scholarships WHERE id = ?").bind(row.id).run();
+        removed++;
+      }
+    }
+
+    const remaining = await c.env.DB.prepare("SELECT COUNT(*) as count FROM scholarships").first() as any;
+    return c.json({ success: true, removed, remaining: remaining?.count || 0, message: `Removed ${removed} duplicates` });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
   }
