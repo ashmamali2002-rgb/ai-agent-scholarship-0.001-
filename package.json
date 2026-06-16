@@ -1,0 +1,26 @@
+{
+  "name": "ai-scholarship-agent",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "wrangler pages dev dist --d1=scholarship-agent-production --local --ip 0.0.0.0 --port 3000",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name ai-scholarship-agent",
+    "dev:sandbox": "wrangler pages dev dist --d1=scholarship-agent-production --local --ip 0.0.0.0 --port 3000",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:migrate:local": "wrangler d1 migrations apply scholarship-agent-production --local",
+    "db:migrate:prod": "wrangler d1 migrations apply scholarship-agent-production",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local"
+  },
+  "dependencies": {
+    "hono": "^4.12.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260531.1",
+    "@hono/vite-build": "^1.2.0",
+    "@hono/vite-cloudflare-pages": "^0.4.3",
+    "@hono/vite-dev-server": "^0.18.2",
+    "vite": "^6.3.5",
+    "wrangler": "^4.4.0"
+  }
+}
