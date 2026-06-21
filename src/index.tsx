@@ -14,6 +14,7 @@ type Bindings = {
   SERPER_API_KEY?: string;
   JINA_API_KEY?: string;
   RESEND_API_KEY?: string;
+  RESEND_FROM?: string;
 };
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -25,6 +26,7 @@ app.use("*", async (c, next) => {
   if (c.env.SERPER_API_KEY) (globalThis as any).SERPER_API_KEY = c.env.SERPER_API_KEY;
   if (c.env.JINA_API_KEY)   (globalThis as any).JINA_API_KEY   = c.env.JINA_API_KEY;
   if (c.env.RESEND_API_KEY) (globalThis as any).RESEND_API_KEY = c.env.RESEND_API_KEY;
+  if (c.env.RESEND_FROM)    (globalThis as any).RESEND_FROM    = c.env.RESEND_FROM;
   await next();
 });
 
@@ -135,12 +137,95 @@ function getBaseLayout(title: string, activeNav: string, content: string): strin
 
     input,select,textarea{background:#fff;border:1px solid #ddd8d0;border-radius:9px;padding:9px 14px;font-size:13px;color:#2d2d2d;outline:none;width:100%;transition:border 0.15s;}
     input:focus,select:focus,textarea:focus{border-color:#c8a97e;}
+
+    /* Extra status badges */
+    .badge-purple{background:#f5f0ff;color:#6d28d9;border:1px solid #ddc9f5;font-size:11px;padding:3px 9px;border-radius:20px;font-weight:600;}
+    .badge-amber{background:#fff8eb;color:#b45309;border:1px solid #f5dca0;font-size:11px;padding:3px 9px;border-radius:20px;font-weight:600;}
+    .badge-soon{background:#fff1f0;color:#c0392b;border:1px solid #f3b9b3;font-size:11px;padding:3px 9px;border-radius:20px;font-weight:600;animation:softpulse 1.8s infinite;}
+    @keyframes softpulse{0%,100%{opacity:1}50%{opacity:0.6}}
+
+    /* Loading skeleton */
+    .skel{background:linear-gradient(90deg,#eee 25%,#f5f5f5 37%,#eee 63%);background-size:400% 100%;animation:shimmer 1.4s ease infinite;border-radius:8px;}
+    @keyframes shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
+
+    /* Error box */
+    .err-box{background:#fff5f5;border:1px solid #f0b8b8;border-radius:12px;padding:20px;text-align:center;color:#c0392b;}
+
+    /* Mobile menu toggle (hidden on desktop) */
+    .menu-toggle{display:none;position:fixed;top:14px;left:14px;z-index:120;width:42px;height:42px;background:#1a1a2e;color:#fff;border:none;border-radius:10px;font-size:17px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+    .sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:49;}
+
+    /* ── Responsive ── */
+    @media(max-width:860px){
+      .sidebar{transform:translateX(-100%);transition:transform 0.25s ease;box-shadow:0 0 40px rgba(0,0,0,0.3);}
+      .sidebar.open{transform:translateX(0);}
+      .sidebar-backdrop.open{display:block;}
+      .main{margin-left:0;}
+      .menu-toggle{display:flex;align-items:center;justify-content:center;}
+      .page-header{padding:64px 18px 0;}
+      .page-title{font-size:22px;}
+      /* collapse inline-styled grids without refactoring each one */
+      [style*="repeat(5,1fr)"]{grid-template-columns:repeat(2,1fr)!important;}
+      [style*="repeat(4,1fr)"]{grid-template-columns:repeat(2,1fr)!important;}
+      [style*="repeat(3,1fr)"]{grid-template-columns:1fr!important;}
+      [style*="repeat(2,1fr)"]{grid-template-columns:1fr!important;}
+      [style*="grid-template-columns:2fr 1fr"]{grid-template-columns:1fr!important;}
+      [style*="grid-template-columns:1fr 1fr"]{grid-template-columns:1fr!important;}
+      [style*="padding:0 36px"]{padding-left:18px!important;padding-right:18px!important;}
+    }
+    @media(max-width:520px){
+      [style*="repeat(5,1fr)"],[style*="repeat(4,1fr)"]{grid-template-columns:1fr 1fr!important;}
+    }
   </style>
 </head>
 <body>
 
+  <!-- Shared helpers — defined early so page-init scripts can use them -->
+  <script>
+    function toggleSidebar(){
+      document.getElementById('appSidebar').classList.toggle('open');
+      document.getElementById('sidebarBackdrop').classList.toggle('open');
+    }
+    function loadingSkeleton(rows){
+      rows = rows || 3; let h = '';
+      for(let i=0;i<rows;i++){ h += '<div class="skel" style="height:64px;margin-bottom:12px;"></div>'; }
+      return h;
+    }
+    function errorBox(msg, retryFn){
+      const id = 'retry_'+Math.random().toString(36).slice(2,8);
+      if(retryFn) window[id] = retryFn;
+      return '<div class="err-box"><i class="fas fa-triangle-exclamation" style="font-size:26px;display:block;margin-bottom:10px;"></i>'
+        + '<p style="font-weight:600;margin-bottom:4px;">'+(msg||'Something went wrong')+'</p>'
+        + '<p style="font-size:12px;color:#999;margin-bottom:'+(retryFn?'12px':'0')+'">Check your connection or API keys, then try again.</p>'
+        + (retryFn?'<button class="btn-outline btn-sm" onclick="window.'+id+'()"><i class="fas fa-rotate-right"></i> Retry</button>':'')
+        + '</div>';
+    }
+    function parseDeadline(str){
+      if(!str) return null;
+      const months={january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11};
+      const m = str.toLowerCase().match(/(january|february|march|april|may|june|july|august|september|october|november|december)\\s+(\\d{4})/);
+      if(m) return new Date(parseInt(m[2]), months[m[1]], 28);
+      const iso = str.match(/(\\d{4})-(\\d{2})-(\\d{2})/);
+      if(iso) return new Date(parseInt(iso[1]), parseInt(iso[2])-1, parseInt(iso[3]));
+      return null;
+    }
+    function schBadges(s){
+      let b = ''; const score = s.match_score||0;
+      if(s.is_fully_funded) b += '<span class="badge-green"><i class="fas fa-check-circle" style="margin-right:3px;"></i>Fully Funded</span>';
+      if(score>=80) b += '<span class="badge-purple"><i class="fas fa-star" style="margin-right:3px;"></i>High Match</span>';
+      if(s.created_at){ const d=new Date(s.created_at); const today=new Date(); if(d.toDateString()===today.toDateString()) b += '<span class="badge-amber"><i class="fas fa-bolt" style="margin-right:3px;"></i>New</span>'; }
+      const dl = parseDeadline(s.deadline);
+      if(dl){ const days=Math.ceil((dl-new Date())/(1000*60*60*24)); if(days>=0 && days<=60) b += '<span class="badge-soon"><i class="fas fa-clock" style="margin-right:3px;"></i>Closing Soon · '+days+'d</span>'; }
+      return b;
+    }
+  </script>
+
+  <!-- MOBILE MENU -->
+  <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Menu"><i class="fas fa-bars"></i></button>
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleSidebar()"></div>
+
   <!-- SIDEBAR -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="appSidebar">
     <div class="sidebar-logo">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
         <div class="logo-mark">G</div>
@@ -351,6 +436,9 @@ function getDashboardHTML(): string {
       <div style="height:3px;background:#e8d5a0;border-radius:2px;"><div id="searchBar" style="height:3px;background:#c8a97e;border-radius:2px;width:0%;transition:width 1s;"></div></div>
     </div>
 
+    <!-- Alerts banner -->
+    <div id="alertsBanner" style="display:none;margin-bottom:18px;"></div>
+
     <!-- Stats -->
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px;">
       <div class="stat-card">
@@ -433,8 +521,8 @@ function getDashboardHTML(): string {
       <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;">
         ${[
           ["fas fa-search","#2d5fa8","#f0f5ff","Search Official Sites","doSearch()"],
-          ["fas fa-user-tie","#2d7a4f","#f0faf4","Find Professors","()=>window.location='/professors'"],
-          ["fas fa-file-signature","#7c3aed","#f5f0ff","Generate Documents","()=>window.location='/documents'"],
+          ["fas fa-user-tie","#2d7a4f","#f0faf4","Find Professors","window.location.href='/professors'"],
+          ["fas fa-file-signature","#7c3aed","#f5f0ff","Generate Documents","window.location.href='/documents'"],
           ["fas fa-robot","#c8a97e","#fdf8f0","Ask AI Assistant","openChat()"],
           ["fas fa-play-circle","#c0392b","#fff5f5","Full Auto Run","runAgent()"],
         ].map(([icon,col,bg,label,fn]) => `
@@ -461,6 +549,7 @@ function getDashboardHTML(): string {
         document.getElementById('s4').textContent = docs.data.documents?.length||0;
 
         const top = sch.data.top_scholarships||[];
+        renderAlerts(top, s);
         const box = document.getElementById('topList');
         if(!top.length){box.innerHTML='<p style="text-align:center;padding:24px 0;color:#aaa;font-size:13px;"><i class="fas fa-search" style="display:block;font-size:28px;margin-bottom:10px;color:#ddd;"></i>No scholarships yet.<br>Click Search to begin.</p>';return;}
         box.innerHTML = top.map(s=>{
@@ -471,14 +560,34 @@ function getDashboardHTML(): string {
             <div style="flex:1;min-width:0;">
               <p style="font-size:13px;font-weight:600;color:#1a1a2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">\${s.title}</p>
               <p style="font-size:11px;color:#aaa;margin-top:1px;">\${s.organization||''} · \${s.country||''}</p>
-              \${s.deadline?'<p style="font-size:11px;color:#c8a97e;margin-top:1px;"><i class="fas fa-clock" style="margin-right:3px;"></i>'+s.deadline+'</p>':''}
+              <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">\${schBadges(s)}</div>
+              \${s.deadline?'<p style="font-size:11px;color:#c8a97e;margin-top:3px;"><i class="fas fa-clock" style="margin-right:3px;"></i>'+s.deadline+'</p>':''}
             </div>
           </div>\`;
         }).join('');
-      }catch(e){console.error(e);}
+      }catch(e){console.error(e);document.getElementById('topList').innerHTML=errorBox('Could not load dashboard data',loadStats);}
     }
 
+    function renderAlerts(top, stats){
+      const banner = document.getElementById('alertsBanner');
+      const soon = (top||[]).filter(s=>{const d=parseDeadline(s.deadline);if(!d)return false;const days=Math.ceil((d-new Date())/(1000*60*60*24));return days>=0&&days<=60;});
+      const high = (stats&&stats.high_match)||0;
+      const items = [];
+      if(soon.length) items.push('<span style="color:#c0392b;font-weight:600;"><i class="fas fa-clock" style="margin-right:5px;"></i>'+soon.length+' closing soon</span>');
+      if(high) items.push('<span style="color:#6d28d9;font-weight:600;"><i class="fas fa-star" style="margin-right:5px;"></i>'+high+' high matches (≥70%)</span>');
+      if(!items.length){ banner.style.display='none'; return; }
+      banner.style.display='block';
+      banner.innerHTML='<div class="card" style="padding:14px 18px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;border-left:3px solid #c8a97e;">'
+        +'<i class="fas fa-bell" style="color:#c8a97e;font-size:16px;"></i>'
+        +'<span style="font-size:13px;font-weight:600;color:#1a1a2e;">Notifications</span>'
+        +items.join('<span style="color:#ddd;">·</span>')
+        +'<a href="/scholarships" style="margin-left:auto;font-size:12px;color:#c8a97e;text-decoration:none;">Review →</a></div>';
+    }
+
+    let searching=false;
     async function doSearch(){
+      if(searching){toast('Search already running…');return;}
+      searching=true;
       const p = document.getElementById('searchProgress');
       const bar = document.getElementById('searchBar');
       const txt = document.getElementById('searchTxt');
@@ -489,7 +598,8 @@ function getDashboardHTML(): string {
         bar.style.width='100%'; txt.textContent=r.data.message;
         setTimeout(()=>{p.style.display='none';bar.style.width='0%';},3500);
         loadStats(); toast(r.data.message);
-      }catch(e){ txt.textContent='Search failed.'; setTimeout(()=>p.style.display='none',3000); }
+      }catch(e){ txt.textContent='Search failed — check your connection or API keys.'; toast('Search failed','err'); setTimeout(()=>p.style.display='none',3500); }
+      finally{ searching=false; }
     }
 
     async function scanKnown(){
@@ -536,6 +646,12 @@ function getScholarshipsHTML(): string {
         <option value="">All Status</option>
         <option value="found">Found</option><option value="applying">Applying</option><option value="applied">Applied</option>
       </select>
+      <select id="fQuick" onchange="loadList()" style="width:170px;">
+        <option value="">All Scholarships</option>
+        <option value="high">High Match (≥80%)</option>
+        <option value="funded">Fully Funded</option>
+        <option value="soon">Closing Soon</option>
+      </select>
       <div style="flex:1;"></div>
       <span id="listCount" style="font-size:12px;color:#aaa;"></span>
     </div>
@@ -550,18 +666,26 @@ function getScholarshipsHTML(): string {
   </div>
 
   <script>
+    let schItems = [];
     async function loadList(){
       const ctry = document.getElementById('fCtry').value;
       const stat = document.getElementById('fStat').value;
+      const quick = document.getElementById('fQuick').value;
       let url='/api/scholarships?limit=50';
       if(ctry)url+='&country='+encodeURIComponent(ctry);
       if(stat)url+='&status='+stat;
+      const box = document.getElementById('schList');
+      box.innerHTML = loadingSkeleton(4);
       try{
         const r = await axios.get(url);
-        const list = r.data.scholarships||[];
+        let list = r.data.scholarships||[];
+        // client-side quick filters
+        if(quick==='high') list = list.filter(s=>(s.match_score||0)>=80);
+        else if(quick==='funded') list = list.filter(s=>s.is_fully_funded);
+        else if(quick==='soon') list = list.filter(s=>{const d=parseDeadline(s.deadline);if(!d)return false;const days=Math.ceil((d-new Date())/(1000*60*60*24));return days>=0&&days<=60;});
+        schItems = list;
         document.getElementById('listCount').textContent=list.length+' scholarships';
-        const box = document.getElementById('schList');
-        if(!list.length){box.innerHTML='<div style="text-align:center;padding:60px 0;color:#aaa;"><i class="fas fa-search" style="font-size:40px;color:#ddd;display:block;margin-bottom:14px;"></i><p>No results. Click Search!</p></div>';return;}
+        if(!list.length){box.innerHTML='<div style="text-align:center;padding:60px 0;color:#aaa;"><i class="fas fa-search" style="font-size:40px;color:#ddd;display:block;margin-bottom:14px;"></i><p>No results. Click Search or adjust filters.</p></div>';return;}
         box.innerHTML = list.map(s=>{
           const sc = s.match_score||0;
           const cls = sc>=70?'score-high':sc>=50?'score-mid':'score-low';
@@ -571,7 +695,7 @@ function getScholarshipsHTML(): string {
               <div class="score-ring \${cls}" style="margin-top:3px;flex-shrink:0;">\${Math.round(sc)}</div>
               <div style="flex:1;min-width:0;">
                 <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
-                  \${s.is_fully_funded?'<span class="badge-green"><i class="fas fa-check-circle" style="margin-right:3px;"></i>Fully Funded</span>':''}
+                  \${schBadges(s)}
                   <span class="badge-blue">\${s.country||'International'}</span>
                   \${trust}
                   \${s.status==='applying'?'<span class="badge-gold">Applying</span>':''}
@@ -579,30 +703,34 @@ function getScholarshipsHTML(): string {
                 </div>
                 <p style="font-size:15px;font-weight:600;color:#1a1a2e;margin-bottom:2px;">\${s.title}</p>
                 <p style="font-size:12px;color:#888;margin-bottom:6px;">\${s.organization||''}</p>
-                <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;">
+                <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
                   \${s.deadline?'<span style="color:#c8a97e;"><i class="fas fa-clock" style="margin-right:3px;"></i>'+s.deadline+'</span>':''}
                   \${s.covers?'<span style="color:#2d7a4f;"><i class="fas fa-gift" style="margin-right:3px;"></i>'+s.covers.substring(0,55)+'</span>':''}
+                  \${s.success_probability?'<span style="color:#2d5fa8;"><i class="fas fa-chart-line" style="margin-right:3px;"></i>'+s.success_probability+'% success odds</span>':''}
                 </div>
+                \${s.recommendation_reason?'<p style="font-size:11.5px;color:#777;line-height:1.5;background:#fafaf8;border:1px solid #ede9e3;border-radius:7px;padding:7px 10px;"><i class="fas fa-lightbulb" style="color:#c8a97e;margin-right:5px;"></i>'+s.recommendation_reason+'</p>':''}
               </div>
               <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">
                 <a href="\${s.url}" target="_blank" class="btn-outline btn-sm"><i class="fas fa-external-link-alt"></i> View</a>
-                <button onclick="applyFor(\${s.id},'\${(s.title||'').replace(/'/g,\\"\\\\'\\")')" class="btn-primary btn-sm"><i class="fas fa-plus"></i> Apply</button>
-                <button onclick="genDocs(\${s.id},'\${(s.title||'').replace(/'/g,\\"\\\\'\\")')" class="btn-gold btn-sm"><i class="fas fa-file-alt"></i> Docs</button>
+                <button onclick="applyFor(\${s.id})" class="btn-primary btn-sm"><i class="fas fa-plus"></i> Apply</button>
+                <button onclick="genDocs(\${s.id})" class="btn-gold btn-sm"><i class="fas fa-file-alt"></i> Docs</button>
               </div>
             </div>
           </div>\`;
         }).join('');
-      }catch(e){console.error(e);}
+      }catch(e){console.error(e);box.innerHTML=errorBox('Could not load scholarships',loadList);}
     }
 
-    async function applyFor(id,title){
-      try{await axios.post('/api/applications',{scholarship_id:id});toast('Application started for '+title);loadList();}
+    function schTitle(id){const s=schItems.find(x=>x.id===id);return s?s.title:'this scholarship';}
+
+    async function applyFor(id){
+      try{await axios.post('/api/applications',{scholarship_id:id});toast('Application started for '+schTitle(id));loadList();}
       catch(e){toast(e.response?.data?.error||'Failed','err');}
     }
 
-    async function genDocs(id,title){
+    async function genDocs(id){
       toast('Generating documents — ~30-60 seconds...');
-      try{await axios.post('/api/documents/generate/all',{scholarship_id:id});toast('Documents ready!');window.location='/documents';}
+      try{await axios.post('/api/documents/generate/all',{scholarship_id:id});toast('Documents ready!');window.location.href='/documents';}
       catch(e){toast('Generation failed','err');}
     }
 
@@ -633,13 +761,16 @@ function getProfessorsHTML(): string {
       <div style="padding:18px 20px;">
         <p style="font-weight:600;font-size:14px;margin-bottom:14px;"><i class="fas fa-search" style="color:#c8a97e;margin-right:7px;"></i>Search University Faculty</p>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
-          <div><label style="font-size:12px;color:#888;display:block;margin-bottom:4px;">University Name *</label>
+          <div><label style="font-size:12px;color:#888;display:block;margin-bottom:4px;">University Name <span style="color:#bbb;">(optional)</span></label>
             <input id="uniName" placeholder="e.g. Heidelberg University"/></div>
-          <div><label style="font-size:12px;color:#888;display:block;margin-bottom:4px;">Department</label>
-            <input id="uniDept" placeholder="e.g. Molecular Biology" value="Biotechnology"/></div>
+          <div><label style="font-size:12px;color:#888;display:block;margin-bottom:4px;">Field / Specialisation *</label>
+            <select id="uniField">
+              ${["Biotechnology","Molecular Biology","Genetics","Microbiology","Immunology","Cancer Biology","Biomedical Sciences","Biomedical Engineering","Pharmacology","Neuroscience","Bioinformatics","Public Health","Regenerative Medicine","Toxicology","Food Science","Environmental Biotechnology"].map(f=>`<option value="${f}">${f}</option>`).join("")}
+            </select></div>
           <div><label style="font-size:12px;color:#888;display:block;margin-bottom:4px;">Country</label>
             <input id="uniCtry" placeholder="e.g. Germany"/></div>
         </div>
+        <p style="font-size:11px;color:#aaa;margin-bottom:12px;"><i class="fas fa-circle-info" style="margin-right:4px;"></i>Leave University blank for a global supervisor search (e.g. for government scholarships). The field is auto-mapped to the right department — Cancer Biology → Oncology, Genetics → Genetics, etc.</p>
         <div style="margin-bottom:12px;">
           <label style="font-size:12px;color:#888;display:block;margin-bottom:4px;">Faculty Page URL (Optional — paste official faculty/people page URL for best results)</label>
           <input id="uniUrl" placeholder="https://university.edu/department/people"/>
@@ -653,12 +784,28 @@ function getProfessorsHTML(): string {
       </div>
     </div>
 
+    <!-- Independent recommendation note -->
+    <div id="profNote" style="display:none;margin-bottom:14px;background:#f0f5ff;border:1px solid #b8cfee;border-radius:10px;padding:12px 16px;font-size:12.5px;color:#2d5fa8;"></div>
+
+    <!-- Sort bar -->
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:#888;">Sort by</span>
+      <select id="profSort" onchange="loadProfs()" style="width:200px;">
+        <option value="compatibility">Compatibility (highest)</option>
+        <option value="country">Country</option>
+        <option value="research">Research Area</option>
+        <option value="university">University</option>
+      </select>
+      <div style="flex:1;"></div>
+      <span id="profCountLbl" style="font-size:12px;color:#aaa;"></span>
+    </div>
+
     <!-- Professor cards -->
     <div id="profGrid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">
       <div style="grid-column:1/-1;text-align:center;padding:60px 0;color:#aaa;">
         <i class="fas fa-user-tie" style="font-size:40px;color:#ddd;display:block;margin-bottom:14px;"></i>
         <p style="font-size:14px;font-weight:500;">No professors found yet</p>
-        <p style="font-size:12px;margin-top:4px;">Enter a university and click Find Professors</p>
+        <p style="font-size:12px;margin-top:4px;">Pick a field (and optionally a university), then click Find Professors</p>
       </div>
     </div>
   </div>
@@ -669,20 +816,25 @@ function getProfessorsHTML(): string {
       p.style.display = p.style.display==='none' ? 'block' : 'none';
     }
 
+    function jarr(v){ if(Array.isArray(v))return v; try{return JSON.parse(v||'[]')}catch{return []} }
+
     async function findProfs(){
       const uni = document.getElementById('uniName').value.trim();
-      if(!uni){toast('Please enter a university name','err');return;}
+      const field = document.getElementById('uniField').value;
       const st = document.getElementById('profStatus');
+      st.querySelector('div')&&(st.innerHTML='<div class="dot-pulse" style="display:inline-flex;margin-right:8px;"><span></span><span></span><span></span></div>'+(uni?('Searching '+uni+' faculty for '+field+'...'):('Global search for '+field+' supervisors...')));
       st.style.display='flex';
       try{
         const r = await axios.post('/api/professors/search',{
           university: uni,
-          department: document.getElementById('uniDept').value||'Biotechnology',
+          field: field,
           country: document.getElementById('uniCtry').value||'',
           profile_url: document.getElementById('uniUrl').value||'',
         });
         st.style.display='none';
-        toast(r.data.message);
+        toast(r.data.message, r.data.professors&&r.data.professors.length?'ok':'err');
+        const note=document.getElementById('profNote');
+        if(r.data.note){ note.style.display='block'; note.innerHTML='<i class="fas fa-circle-info" style="margin-right:6px;"></i>'+r.data.note; } else { note.style.display='none'; }
         loadProfs();
       }catch(e){st.style.display='none';toast(e.response?.data?.error||'Search failed','err');}
     }
@@ -696,6 +848,7 @@ function getProfessorsHTML(): string {
       try{
         const r = await axios.post('/api/professors/analyse-department',{
           university: uni,
+          field: document.getElementById('uniField').value,
           country: document.getElementById('uniCtry').value||'',
           department_url: document.getElementById('uniUrl').value||'',
         });
@@ -714,16 +867,22 @@ function getProfessorsHTML(): string {
     }
 
     async function loadProfs(){
+      const box = document.getElementById('profGrid');
+      box.innerHTML='<div style="grid-column:1/-1;">'+loadingSkeleton(2)+'</div>';
       try{
-        const r = await axios.get('/api/professors');
+        const sort = document.getElementById('profSort')?.value||'compatibility';
+        const r = await axios.get('/api/professors?sort='+sort);
         const list = r.data.professors||[];
-        const box = document.getElementById('profGrid');
-        if(!list.length){box.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:#aaa;"><i class="fas fa-user-tie" style="font-size:40px;color:#ddd;display:block;margin-bottom:14px;"></i><p>No professors found yet.</p></div>';return;}
+        document.getElementById('profCountLbl').textContent = list.length+' professor'+(list.length===1?'':'s');
+        if(!list.length){box.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:#aaa;"><i class="fas fa-user-tie" style="font-size:40px;color:#ddd;display:block;margin-bottom:14px;"></i><p>No professors found yet.</p><p style="font-size:12px;margin-top:4px;">Pick a field and click Find Professors.</p></div>';return;}
+        const NA='<span style="color:#bbb;font-style:italic;">Information Not Available</span>';
         box.innerHTML = list.map(p=>{
           const sc = p.relevance_score||0;
           const cls = sc>=70?'score-high':sc>=50?'score-mid':'score-low';
           const acc = p.accepting_students==='yes'?'<span class="badge-green"><i class="fas fa-check-circle" style="margin-right:3px;"></i>Accepting Students</span>':
                      p.accepting_students==='no'?'<span class="badge-red">Not Accepting</span>':'<span style="font-size:11px;color:#aaa;padding:3px 8px;">Status Unknown</span>';
+          const topics = jarr(p.matched_topics), keywords = jarr(p.matched_keywords), pubs = jarr(p.recent_publications);
+          const chip = (t,col)=>'<span style="font-size:10.5px;background:'+col+'15;color:'+col+';border:1px solid '+col+'33;padding:2px 8px;border-radius:20px;">'+t+'</span>';
           return \`<div class="card" style="padding:18px;">
             <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px;">
               <div style="width:44px;height:44px;background:#f5f1ea;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
@@ -731,23 +890,33 @@ function getProfessorsHTML(): string {
               </div>
               <div style="flex:1;min-width:0;">
                 <p style="font-size:15px;font-weight:600;color:#1a1a2e;">\${p.name}</p>
-                <p style="font-size:12px;color:#888;">\${p.title||'Faculty'} · \${p.university}</p>
+                <p style="font-size:12px;color:#888;">\${p.title||'Faculty'} · \${p.university||p.field||''}</p>
                 <p style="font-size:11px;color:#aaa;">\${p.department||''}\${p.country?' · '+p.country:''}</p>
               </div>
-              <div class="score-ring \${cls}" style="flex-shrink:0;">\${sc}</div>
+              <div style="text-align:center;flex-shrink:0;">
+                <div class="score-ring \${cls}">\${sc}</div>
+                <p style="font-size:9px;color:#aaa;margin-top:2px;">match</p>
+              </div>
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">\${acc}</div>
-            \${p.research_interests?'<p style="font-size:12px;color:#555;margin-bottom:8px;line-height:1.5;"><strong>Research:</strong> '+p.research_interests+'</p>':''}
+            \${p.recommendation_reason?'<p style="font-size:12px;color:#2d5fa8;background:#f0f5ff;border:1px solid #cfe0f7;border-radius:8px;padding:8px 10px;margin-bottom:10px;line-height:1.5;"><i class="fas fa-lightbulb" style="margin-right:5px;"></i>'+p.recommendation_reason+'</p>':''}
+            \${topics.length?'<div style="margin-bottom:8px;"><p style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Matching Topics</p><div style="display:flex;flex-wrap:wrap;gap:5px;">'+topics.map(t=>chip(t,'#2d7a4f')).join('')+'</div></div>':''}
+            \${keywords.length?'<div style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:5px;">'+keywords.map(t=>chip(t,'#7c3aed')).join('')+'</div>':''}
+            <p style="font-size:12px;color:#555;margin-bottom:8px;line-height:1.5;"><strong>Research:</strong> \${p.research_interests||NA}</p>
             \${p.lab_name?'<p style="font-size:12px;color:#888;margin-bottom:8px;"><i class="fas fa-flask" style="margin-right:4px;color:#c8a97e;"></i>'+p.lab_name+'</p>':''}
-            \${p.raw_bio?'<p style="font-size:12px;color:#666;line-height:1.5;margin-bottom:10px;font-style:italic;">"'+p.raw_bio+'"</p>':''}
-            <div style="display:flex;gap:7px;flex-wrap:wrap;">
-              \${p.email?'<a href="mailto:'+p.email+'" class="btn-primary btn-sm" style="text-decoration:none;"><i class="fas fa-envelope"></i> '+p.email+'</a>':''}
-              \${p.linkedin_url?'<a href="'+p.linkedin_url+'" target="_blank" class="btn-outline btn-sm" style="text-decoration:none;"><i class="fab fa-linkedin"></i> LinkedIn</a>':''}
-              \${p.profile_url?'<a href="'+p.profile_url+'" target="_blank" class="btn-outline btn-sm" style="text-decoration:none;"><i class="fas fa-external-link-alt"></i> Profile</a>':''}
+            \${pubs.length?'<div style="margin-bottom:10px;"><p style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Recent Publications</p>'+pubs.slice(0,3).map(pub=>'<p style="font-size:11.5px;color:#666;line-height:1.4;margin-bottom:3px;">• '+pub+'</p>').join('')+'</div>':''}
+            <div style="border-top:1px solid #f0ede8;padding-top:10px;margin-top:6px;">
+              <p style="font-size:11px;color:#888;margin-bottom:6px;"><i class="fas fa-envelope" style="margin-right:5px;color:#c8a97e;"></i>\${p.email?'<a href="mailto:'+p.email+'" style="color:#2d5fa8;text-decoration:none;">'+p.email+'</a>':NA}</p>
+              <div style="display:flex;gap:7px;flex-wrap:wrap;">
+                \${p.profile_url?'<a href="'+p.profile_url+'" target="_blank" class="btn-outline btn-sm" style="text-decoration:none;"><i class="fas fa-external-link-alt"></i> Profile</a>':''}
+                \${p.google_scholar_url?'<a href="'+p.google_scholar_url+'" target="_blank" class="btn-outline btn-sm" style="text-decoration:none;"><i class="fas fa-graduation-cap"></i> Scholar</a>':''}
+                \${p.lab_website?'<a href="'+p.lab_website+'" target="_blank" class="btn-outline btn-sm" style="text-decoration:none;"><i class="fas fa-flask"></i> Lab</a>':''}
+                \${p.linkedin_url?'<a href="'+p.linkedin_url+'" target="_blank" class="btn-outline btn-sm" style="text-decoration:none;"><i class="fab fa-linkedin"></i> LinkedIn</a>':''}
+              </div>
             </div>
           </div>\`;
         }).join('');
-      }catch(e){console.error(e);}
+      }catch(e){console.error(e);box.innerHTML='<div style="grid-column:1/-1;">'+errorBox('Could not load professors',loadProfs)+'</div>';}
     }
 
     loadProfs();
@@ -818,7 +987,7 @@ function getApplicationsHTML(): string {
             </div>
           </div>
         </div>\`).join('');
-      }catch(e){console.error(e);}
+      }catch(e){console.error(e);document.getElementById('appList').innerHTML=errorBox('Could not load applications',loadApps);}
     }
 
     async function sendAppEmail(id){
@@ -878,6 +1047,20 @@ function getDocumentsHTML(): string {
       </div>
     </div>
 
+    <!-- Readiness panel -->
+    <div class="card" style="padding:18px 20px;margin-bottom:18px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div style="display:flex;align-items:center;gap:14px;">
+          <div class="score-ring" id="readyRing" style="width:54px;height:54px;">—</div>
+          <div>
+            <p style="font-weight:600;font-size:14px;color:#1a1a2e;">Application Readiness</p>
+            <p style="font-size:12px;color:#888;" id="readySub">Checking your document set…</p>
+          </div>
+        </div>
+        <div id="readyChips" style="display:flex;gap:7px;flex-wrap:wrap;"></div>
+      </div>
+    </div>
+
     <!-- Tabs -->
     <div style="display:flex;gap:8px;margin-bottom:16px;" id="docTabs">
       ${["All","Resume/CV","Cover Letter","Personal Statement","Research Proposal"].map((t,i)=>
@@ -905,6 +1088,7 @@ function getDocumentsHTML(): string {
         st.style.display='none';
         toast('Document generated!');
         loadDocs();
+        loadReadiness();
         if(r.data.content) openDoc(r.data.title,r.data.content);
       }catch(e){st.style.display='none';toast('Generation failed','err');}
     }
@@ -918,6 +1102,7 @@ function getDocumentsHTML(): string {
         st.style.display='none';
         toast('All 4 documents generated!');
         loadDocs();
+        loadReadiness();
       }catch(e){st.style.display='none';toast('Generation failed','err');}
     }
 
@@ -927,7 +1112,26 @@ function getDocumentsHTML(): string {
       loadDocs(type);
     }
 
+    async function loadReadiness(){
+      try{
+        const r = await axios.get('/api/documents/readiness');
+        const d = r.data;
+        const ring = document.getElementById('readyRing');
+        const score = d.readiness_score||0;
+        ring.textContent = score+'%';
+        ring.className = 'score-ring '+(score>=70?'score-high':score>=40?'score-mid':'score-low');
+        document.getElementById('readySub').textContent =
+          d.missing.length===0 ? 'All 4 core documents ready — you can apply.' :
+          d.missing.length+' of 4 documents still missing.';
+        document.getElementById('readyChips').innerHTML =
+          (d.generated||[]).map(g=>'<span class="badge-green" style="font-size:11px;"><i class="fas fa-check" style="margin-right:3px;"></i>'+g.label+'</span>').join('')+
+          (d.missing||[]).map(m=>'<span class="badge-red" style="font-size:11px;"><i class="fas fa-times" style="margin-right:3px;"></i>'+m.label+'</span>').join('');
+      }catch(e){ document.getElementById('readySub').textContent='Could not load readiness.'; }
+    }
+
     async function loadDocs(type=''){
+      const grid=document.getElementById('docGrid');
+      if(grid && !grid.children.length) grid.innerHTML='<div style="grid-column:1/-1;">'+loadingSkeleton(2)+'</div>';
       try{
         let url='/api/documents/list';if(type)url+='?type='+type;
         const r=await axios.get(url);
@@ -951,7 +1155,7 @@ function getDocumentsHTML(): string {
             <button onclick="delDoc(\${d.id})" style="background:#fff5f5;border:1px solid #f0b8b8;color:#c0392b;padding:6px 12px;border-radius:7px;font-size:12px;cursor:pointer;"><i class="fas fa-trash"></i></button>
           </div>
         </div>\`).join('');
-      }catch(e){console.error(e);}
+      }catch(e){console.error(e);document.getElementById('docGrid').innerHTML='<div style="grid-column:1/-1;">'+errorBox('Could not load documents',loadDocs)+'</div>';}
     }
 
     async function viewDoc(id){
@@ -966,6 +1170,7 @@ function getDocumentsHTML(): string {
     }
 
     loadDocs();
+    loadReadiness();
   </script>`;
   return getBaseLayout("Documents", "documents", c);
 }

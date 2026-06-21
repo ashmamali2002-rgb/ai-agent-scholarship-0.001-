@@ -7,6 +7,9 @@
 
 // API keys loaded from Cloudflare Worker environment (set in .dev.vars / wrangler secrets)
 // DO NOT hardcode secrets here
+import { fetchWithRetry } from "./http";
+import { mapFieldToDepartments } from "./departments";
+
 function getSerperKey(): string { return (globalThis as any).SERPER_API_KEY || ''; }
 function getJinaKey(): string   { return (globalThis as any).JINA_API_KEY   || ''; }
 
@@ -75,7 +78,21 @@ const TRUSTED_TIER1_DOMAINS = [
 ];
 
 // ── Tier-2 RECOGNISED domains — reputable .edu, .ac, .org sources ──
-const RECOGNISED_EXTENSIONS = [".edu", ".ac.uk", ".ac.jp", ".ac.kr", ".edu.pk", ".edu.au", ".edu.cn", ".gov"];
+const RECOGNISED_EXTENSIONS = [
+  ".edu", ".ac.uk", ".ac.jp", ".ac.kr", ".ac.cn", ".ac.nz", ".ac.za", ".ac.in",
+  ".edu.pk", ".edu.au", ".edu.cn", ".edu.sg", ".edu.tw", ".edu.hk",
+  ".gov", ".gov.uk", ".go.jp", ".go.kr", ".gouv.fr",
+];
+
+// ── University domain hints — many real universities use plain ccTLDs
+// (e.g. uni-heidelberg.de, u-tokyo.ac.jp). For reading faculty pages we
+// treat any non-blocked domain that looks academic as readable.
+const ACADEMIC_HINTS = ["uni-", "university", "univ", "-u.", "u-", "hochschule", "tech", "institut", "college", "campus"];
+
+function looksAcademic(hostname: string): boolean {
+  if (RECOGNISED_EXTENSIONS.some(ext => hostname.endsWith(ext))) return true;
+  return ACADEMIC_HINTS.some(h => hostname.includes(h));
+}
 
 export function classifyUrl(url: string): { trusted: boolean; tier: "official" | "recognised" | "unknown"; domain: string } {
   try {
@@ -106,14 +123,14 @@ export function classifyUrl(url: string): { trusted: boolean; tier: "official" |
 // ── Core Serper search + trust filter ───────────────────────
 export async function searchScholarships(query: string, numResults: number = 10): Promise<SearchResult[]> {
   try {
-    const response = await fetch("https://google.serper.dev/search", {
+    const response = await fetchWithRetry("https://google.serper.dev/search", {
       method: "POST",
       headers: {
         "X-API-KEY": getSerperKey(),
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ q: query, num: numResults, gl: "us", hl: "en" }),
-    });
+    }, { label: "serper", retries: 2, timeoutMs: 20000 });
 
     if (!response.ok) throw new Error(`Serper API error: ${response.status}`);
 
@@ -146,29 +163,45 @@ export async function searchScholarships(query: string, numResults: number = 10)
   }
 }
 
-// ── Read full page via Jina (only for trusted URLs) ─────────
-export async function readWebpage(url: string): Promise<string> {
-  const { trusted } = classifyUrl(url);
-  if (!trusted) return "";
+// ── Read full page via Jina ─────────────────────────────────
+// By default we block only junk/social domains. Scholarship search
+// already pre-filters URLs by trust, so loosening this lets professor
+// discovery read real university pages (uni-heidelberg.de, etc.)
+// Pass { trustedOnly: true } to restrict to Tier-1/Tier-2 sources.
+export async function readWebpage(url: string, opts: { trustedOnly?: boolean } = {}): Promise<string> {
+  let hostname = "";
+  try { hostname = new URL(url).hostname.toLowerCase(); } catch { return ""; }
 
-  try {
-    const jinaUrl = `https://r.jina.ai/${url}`;
-    const response = await fetch(jinaUrl, {
-      headers: {
-        "Authorization": `Bearer ${getJinaKey()}`,
-        "Accept": "text/plain",
-        "X-Return-Format": "text",
-      },
-      signal: AbortSignal.timeout(15000),
-    });
+  // Always block junk/social/clickbait
+  if (BLOCKED_DOMAINS.some(d => hostname.includes(d))) return "";
 
-    if (!response.ok) return "";
-    const text = await response.text();
-    return text.substring(0, 5000);
-  } catch (error) {
-    console.error("Jina read error:", error);
-    return "";
+  if (opts.trustedOnly) {
+    const { trusted } = classifyUrl(url);
+    if (!trusted) return "";
   }
+
+  const jinaUrl = `https://r.jina.ai/${url}`;
+  const key = getJinaKey();
+
+  // Attempt: with API key (higher rate limit) if present, then a keyless
+  // retry on auth failure. Jina's reader works without a key (free, slower),
+  // so an invalid/missing key degrades gracefully instead of failing hard.
+  const attempts: Array<Record<string, string>> = [];
+  if (key) attempts.push({ "Authorization": `Bearer ${key}`, "Accept": "text/plain", "X-Return-Format": "text" });
+  attempts.push({ "Accept": "text/plain", "X-Return-Format": "text" });
+
+  for (const headers of attempts) {
+    try {
+      const response = await fetch(jinaUrl, { headers, signal: AbortSignal.timeout(20000) });
+      if (response.status === 401 || response.status === 403) continue; // try keyless
+      if (!response.ok) return "";
+      const text = await response.text();
+      return text.substring(0, 5000);
+    } catch (error) {
+      console.error("Jina read error:", error);
+    }
+  }
+  return "";
 }
 
 // ── Build OFFICIAL-SOURCE-ONLY search queries ────────────────
@@ -208,40 +241,61 @@ export function buildSearchQueries(_profile: any): string[] {
   ];
 }
 
-// ── Search professors in a specific university/department ────
-export async function searchProfessors(university: string, department: string, country: string): Promise<SearchResult[]> {
-  const queries = [
-    `${university} ${department} faculty professors staff email site:${getDomainForUniversity(university)}`,
-    `"${university}" "${department}" professor PhD supervisor biotechnology molecular biology 2024 2025`,
-    `${university} ${department} research group principal investigator email`,
-  ];
+// ── Search professors — field-aware, global, dynamic departments ──
+// `field` is mapped to the correct department names (Cancer Biology ->
+// Oncology, etc.) so we target the right faculty worldwide. If `university`
+// is empty we run a global discovery (used for government scholarships
+// that aren't tied to a specific supervisor).
+export async function searchProfessors(university: string, field: string, country: string): Promise<SearchResult[]> {
+  const { departments } = mapFieldToDepartments(field);
+  const deptPhrase = departments.slice(0, 3).map(d => `"${d}"`).join(" OR ");
+  const uni = (university || "").trim();
+  const domain = uni ? getDomainForUniversity(uni) : "";
+
+  const queries: string[] = [];
+  if (uni) {
+    if (domain && domain !== "edu") {
+      queries.push(`${uni} faculty professor ${departments[0]} email site:${domain}`);
+    }
+    queries.push(`"${uni}" professor faculty ${deptPhrase} email research interests`);
+    queries.push(`${uni} ${departments[0]} department faculty people directory`);
+  } else {
+    // Global mode — government scholarship / no specific university
+    queries.push(`leading professors ${departments[0]} ${country} accepting international PhD masters students`);
+    queries.push(`top ${departments[0]} research groups faculty ${country} university email`);
+  }
 
   const allResults: SearchResult[] = [];
-  for (const q of queries.slice(0, 2)) {
+  const seen = new Set<string>();
+  for (const q of queries.slice(0, 3)) {
     try {
-      const response = await fetch("https://google.serper.dev/search", {
+      const response = await fetchWithRetry("https://google.serper.dev/search", {
         method: "POST",
         headers: { "X-API-KEY": getSerperKey(), "Content-Type": "application/json" },
         body: JSON.stringify({ q, num: 8, gl: "us", hl: "en" }),
-      });
+      }, { label: "serper-prof", retries: 1, timeoutMs: 20000 });
       if (!response.ok) continue;
       const data = await response.json() as any;
-      if (data.organic) {
-        for (const item of data.organic) {
-          const url = item.link || "";
-          const { trusted } = classifyUrl(url);
-          // For professor search, accept university .edu / .ac pages
-          const isUniPage = url.includes(university.toLowerCase().replace(/\s+/g, "")) ||
-            url.includes(".edu") || url.includes(".ac.");
-          if (!trusted && !isUniPage) continue;
-          allResults.push({
-            title: item.title || "",
-            url,
-            snippet: item.snippet || "",
-            source: url ? new URL(url).hostname : "",
-            trustLevel: "recognised",
-          });
-        }
+      if (!data.organic) continue;
+      for (const item of data.organic) {
+        const url = item.link || "";
+        if (!url || seen.has(url)) continue;
+        let hostname = "";
+        try { hostname = new URL(url).hostname.toLowerCase(); } catch { continue; }
+        if (BLOCKED_DOMAINS.some(d => hostname.includes(d))) continue;
+        const { trusted } = classifyUrl(url);
+        const uniSlug = uni.toLowerCase().replace(/\s+/g, "");
+        const isUniPage = (uniSlug && hostname.includes(uniSlug)) || looksAcademic(hostname);
+        // In university mode, prefer academic domains; in global mode accept academic only
+        if (!trusted && !isUniPage) continue;
+        seen.add(url);
+        allResults.push({
+          title: item.title || "",
+          url,
+          snippet: item.snippet || "",
+          source: hostname,
+          trustLevel: trusted ? "recognised" : "unknown",
+        });
       }
     } catch {}
   }

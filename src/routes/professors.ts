@@ -1,29 +1,40 @@
 // ============================================================
 // GETSCO — Professor Finder Route
-// Finds department faculty, research focus, emails, LinkedIn
-// Only operates on official university pages
+// Global, field-aware faculty discovery + research compatibility.
+// Targets the correct department per field, prioritises official
+// university sources, and never fabricates contact details.
 // ============================================================
 
 import { Hono } from "hono";
-import { analyzeProfessorPage, analyzeUniversityDepartment } from "../lib/ai";
+import { analyzeProfessorPage, analyzeUniversityDepartment, type ProfessorRecord } from "../lib/ai";
 import { readWebpage, searchProfessors } from "../lib/search";
 import { buildProfileSummary } from "../lib/profile";
+import { mapFieldToDepartments } from "../lib/departments";
 
 type Bindings = { DB: D1Database };
 const professors = new Hono<{ Bindings: Bindings }>();
 
-// ── List all saved professors ─────────────────────────────────
+// Allowed sort columns -> SQL
+const SORTS: Record<string, string> = {
+  compatibility: "relevance_score DESC",
+  country: "country ASC, relevance_score DESC",
+  research: "research_interests ASC, relevance_score DESC",
+  university: "university ASC, relevance_score DESC",
+};
+
+// ── List saved professors (with sort) ─────────────────────────
 professors.get("/", async (c) => {
   try {
-    const { university, country, min_score } = c.req.query();
+    const { university, country, min_score, sort, field } = c.req.query();
     let query = "SELECT * FROM professors WHERE 1=1";
     const params: any[] = [];
 
     if (university) { query += " AND university LIKE ?"; params.push(`%${university}%`); }
     if (country) { query += " AND country LIKE ?"; params.push(`%${country}%`); }
+    if (field) { query += " AND field LIKE ?"; params.push(`%${field}%`); }
     if (min_score) { query += " AND relevance_score >= ?"; params.push(parseInt(min_score)); }
 
-    query += " ORDER BY relevance_score DESC, created_at DESC LIMIT 50";
+    query += ` ORDER BY ${SORTS[sort || "compatibility"] || SORTS.compatibility} LIMIT 60`;
 
     const results = await c.env.DB.prepare(query).bind(...params).all();
     return c.json({ success: true, professors: results.results, count: results.results.length });
@@ -32,82 +43,119 @@ professors.get("/", async (c) => {
   }
 });
 
-// ── Search professors for a specific university ──────────────
+// ── Persist one professor (anti-fabrication: verify email vs source) ──
+async function persistProfessor(
+  DB: D1Database,
+  prof: ProfessorRecord,
+  ctx: { university: string; department: string; country: string; field: string; sourceUrl: string; verifyText: string; scholarshipId: number | null; recommendationType: string }
+): Promise<boolean> {
+  // Keep an email/scholar/profile link ONLY if it actually appears in the
+  // page we read — this blocks AI-invented contact details.
+  const txt = (ctx.verifyText || "").toLowerCase();
+  const verify = (val: string) => (val && txt.includes(val.toLowerCase()) ? val : "");
+  const email = verify(prof.email);
+  const scholar = verify(prof.googleScholarUrl);
+  const linkedin = verify(prof.linkedinUrl);
+
+  const existing = await DB.prepare("SELECT id FROM professors WHERE name = ? AND university = ?")
+    .bind(prof.name, ctx.university).first();
+  if (existing) return false;
+
+  await DB.prepare(`
+    INSERT INTO professors
+    (university, department, country, field, name, title, email, linkedin_url, profile_url,
+     research_interests, lab_name, lab_website, google_scholar_url, recent_publications,
+     accepting_students, relevance_score, matched_topics, matched_keywords,
+     recommendation_reason, raw_bio, source_url, scholarship_id, recommendation_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    ctx.university, ctx.department, ctx.country, ctx.field,
+    prof.name, prof.title, email, linkedin, prof.profileUrl,
+    prof.researchInterests, prof.labName, prof.labWebsite, scholar,
+    JSON.stringify(prof.recentPublications || []),
+    prof.acceptingStudents, prof.relevanceScore,
+    JSON.stringify(prof.matchedTopics || []), JSON.stringify(prof.matchedKeywords || []),
+    prof.recommendationReason, prof.rawBio, ctx.sourceUrl,
+    ctx.scholarshipId, ctx.recommendationType,
+  ).run();
+  return true;
+}
+
+// ── Search professors — global, field-aware ──────────────────
 professors.post("/search", async (c) => {
   try {
     const body = await c.req.json() as any;
-    const university = body.university || "";
-    const department = body.department || "Biotechnology";
+    const university = (body.university || "").trim();
+    // Accept either `field` (new) or legacy `department`
+    const field = (body.field || body.department || "Biotechnology").trim();
     const country = body.country || "";
-    const profileUrl = body.profile_url || ""; // optional: direct faculty page URL
+    const profileUrl = body.profile_url || "";
+    const scholarshipId = body.scholarship_id ? parseInt(body.scholarship_id) : null;
+    const recommendationType = university ? "university" : "government";
 
-    if (!university) return c.json({ success: false, error: "University name is required" }, 400);
+    // University OR field is enough — field-only runs a global discovery.
+    if (!university && !field) {
+      return c.json({ success: false, error: "Provide a university or a field of study." }, 400);
+    }
 
     const profileSummary = buildProfileSummary();
-    const found: any[] = [];
+    const { departments } = mapFieldToDepartments(field);
+    const department = departments[0];
+    const found: ProfessorRecord[] = [];
+    let searchedPages = 0;
+    let pagesRead = 0;
 
-    // Strategy 1: direct faculty page URL if provided
+    const ctxBase = { university, department, country, field, scholarshipId, recommendationType };
+
+    // Strategy 1: direct faculty page URL
     if (profileUrl) {
       const pageContent = await readWebpage(profileUrl);
       if (pageContent) {
-        const profs = await analyzeProfessorPage(pageContent, university, department, profileSummary);
-        for (const prof of profs) {
-          if (prof.relevanceScore < 30) continue;
-          const existing = await c.env.DB.prepare(
-            "SELECT id FROM professors WHERE university = ? AND name = ?"
-          ).bind(university, prof.name).first();
-          if (existing) continue;
-          await c.env.DB.prepare(`
-            INSERT INTO professors (university, department, country, name, title, email, linkedin_url, profile_url, research_interests, lab_name, accepting_students, relevance_score, raw_bio, source_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(
-            university, department, country,
-            prof.name, prof.title, prof.email,
-            prof.linkedinUrl, prof.profileUrl,
-            prof.researchInterests, prof.labName,
-            prof.acceptingStudents, prof.relevanceScore,
-            prof.rawBio, profileUrl
-          ).run();
-          found.push(prof);
+        pagesRead++;
+        const profs = await analyzeProfessorPage(pageContent, university || department, field, profileSummary);
+        for (const prof of profs.filter(p => p.relevanceScore >= 30)) {
+          if (await persistProfessor(c.env.DB, prof, { ...ctxBase, sourceUrl: profileUrl, verifyText: pageContent })) found.push(prof);
         }
       }
     }
 
-    // Strategy 2: web search for faculty pages
-    if (found.length < 3) {
-      const searchResults = await searchProfessors(university, department, country);
-      for (const result of searchResults.slice(0, 3)) {
+    // Strategy 2: web search for faculty pages (field-aware, global)
+    if (found.length < 4) {
+      const searchResults = await searchProfessors(university, field, country);
+      searchedPages = searchResults.length;
+      for (const result of searchResults.slice(0, 5)) {
         const pageContent = await readWebpage(result.url);
-        if (!pageContent) continue;
+        if (pageContent) pagesRead++;
+        const content = pageContent || `${result.title}\n${result.snippet}`;
+        if (!content.trim()) continue;
 
-        const profs = await analyzeProfessorPage(pageContent, university, department, profileSummary);
-        for (const prof of profs.filter(p => p.relevanceScore >= 35)) {
-          const existing = await c.env.DB.prepare(
-            "SELECT id FROM professors WHERE university = ? AND name = ?"
-          ).bind(university, prof.name).first();
-          if (existing) continue;
-          await c.env.DB.prepare(`
-            INSERT INTO professors (university, department, country, name, title, email, linkedin_url, profile_url, research_interests, lab_name, accepting_students, relevance_score, raw_bio, source_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(
-            university, department, country,
-            prof.name, prof.title, prof.email,
-            prof.linkedinUrl, prof.profileUrl,
-            prof.researchInterests, prof.labName,
-            prof.acceptingStudents, prof.relevanceScore,
-            prof.rawBio, result.url
-          ).run();
-          found.push(prof);
+        const profs = await analyzeProfessorPage(content, university || department, field, profileSummary);
+        for (const prof of profs.filter(p => p.relevanceScore >= 30)) {
+          if (await persistProfessor(c.env.DB, prof, { ...ctxBase, sourceUrl: result.url, verifyText: content })) found.push(prof);
         }
+        if (found.length >= 8) break;
       }
     }
+
+    const where = university || `the ${field} field`;
+    const message = found.length
+      ? `Found ${found.length} relevant professor${found.length === 1 ? "" : "s"} for ${where}`
+      : searchedPages === 0
+        ? `No faculty pages found for ${where}. Try pasting an official faculty/people page URL.`
+        : `Searched ${searchedPages} page(s) but couldn't verify matching professors. Paste the department's official faculty page URL for a precise read.`;
 
     return c.json({
       success: true,
-      message: `Found ${found.length} relevant professors at ${university}`,
+      message,
       professors: found,
       university,
+      field,
       department,
+      recommendation_type: recommendationType,
+      note: recommendationType === "government"
+        ? "These are independent supervisor suggestions based on your research interests — they are not affiliated with the scholarship provider."
+        : undefined,
+      debug: { searched_pages: searchedPages, pages_read: pagesRead },
     });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
@@ -120,6 +168,7 @@ professors.post("/analyse-department", async (c) => {
     const body = await c.req.json() as any;
     const university = body.university || "";
     const country = body.country || "";
+    const field = (body.field || body.department || "Biotechnology").trim();
     const departmentUrl = body.department_url || "";
 
     if (!university) return c.json({ success: false, error: "University name is required" }, 400);
@@ -127,30 +176,17 @@ professors.post("/analyse-department", async (c) => {
     const profileSummary = buildProfileSummary();
 
     let pageContent = "";
-    if (departmentUrl) {
-      pageContent = await readWebpage(departmentUrl) || "";
-    }
-
-    // If no URL provided, search for the department page
+    if (departmentUrl) pageContent = await readWebpage(departmentUrl) || "";
     if (!pageContent) {
-      const results = await searchProfessors(university, "Biotechnology Molecular Biology", country);
-      if (results.length > 0) {
-        pageContent = await readWebpage(results[0].url) || "";
-      }
+      const results = await searchProfessors(university, field, country);
+      if (results.length > 0) pageContent = await readWebpage(results[0].url) || "";
     }
-
     if (!pageContent) {
       return c.json({ success: false, error: "Could not retrieve department page. Please provide department_url." }, 400);
     }
 
     const analysis = await analyzeUniversityDepartment(pageContent, university, country, profileSummary);
-
-    return c.json({
-      success: true,
-      university,
-      country,
-      analysis,
-    });
+    return c.json({ success: true, university, country, field, analysis });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
   }

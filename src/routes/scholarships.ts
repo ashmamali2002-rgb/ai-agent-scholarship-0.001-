@@ -2,9 +2,108 @@ import { Hono } from "hono";
 import { searchScholarships, readWebpage, buildSearchQueries, getKnownScholarships, classifyUrl } from "../lib/search";
 import { scoreScholarship, analyzeScholarshipPage } from "../lib/ai";
 import { buildProfileSummary, USER_PROFILE, CURRENT_DATE, CURRENT_YEAR } from "../lib/profile";
+import { computeSuccessProbability, buildRecommendationReason, classifyDeadline } from "../lib/scoring";
 
 type Bindings = { DB: D1Database };
 const scholarships = new Hono<{ Bindings: Bindings }>();
+
+// ── Shared search routine — used by the /search route AND the agent ──
+// Bounded for Cloudflare limits: few queries, parallel analysis, one AI
+// call per candidate (no per-result page fetch in the hot loop).
+export async function runScholarshipSearch(
+  DB: D1Database,
+  customQuery: string | null = null
+): Promise<{ found: any[]; skippedExpired: number; queriesRun: number }> {
+  const profileSummary = buildProfileSummary();
+  const queries = customQuery ? [customQuery] : buildSearchQueries(USER_PROFILE).slice(0, 4);
+
+  // 1) Gather candidate results from all queries (parallel)
+  const perQuery = await Promise.all(
+    queries.map(async (query) => {
+      try {
+        await DB.prepare("INSERT INTO search_history (query, results_count) VALUES (?, 0)").bind(query).run();
+        return await searchScholarships(query, 5);
+      } catch { return []; }
+    })
+  );
+
+  // 2) Flatten + dedupe by URL, skip ones already stored
+  const seen = new Set<string>();
+  const candidates: any[] = [];
+  for (const results of perQuery) {
+    for (const r of results.slice(0, 3)) {
+      if (!r.url || seen.has(r.url)) continue;
+      seen.add(r.url);
+      const existing = await DB.prepare("SELECT id FROM scholarships WHERE url = ?").bind(r.url).first();
+      if (existing) continue;
+      candidates.push(r);
+    }
+  }
+  const bounded = candidates.slice(0, 10);
+
+  // 3) Analyze candidates in parallel (one AI call each, snippet-based)
+  const analyses = await Promise.all(
+    bounded.map(async (r) => {
+      try {
+        const analysis = await analyzeScholarshipPage(`${r.title}\n${r.snippet}`, profileSummary);
+        return { r, analysis };
+      } catch { return null; }
+    })
+  );
+
+  // 4) Store the keepers
+  const found: any[] = [];
+  let skippedExpired = 0;
+  for (const item of analyses) {
+    if (!item) continue;
+    const { r, analysis } = item;
+    if (analysis.isExpired) { skippedExpired++; continue; }
+
+    const trustInfo = classifyUrl(r.url);
+    const finalScore = analysis.matchScore || 50;
+    const detectedCountry = analysis.country ||
+      USER_PROFILE.targetCountries.find(tc =>
+        (analysis.organization + r.url + r.title).toLowerCase().includes(tc.toLowerCase())
+      ) || "International";
+    const deadline = analysis.deadline || `Check website (${CURRENT_YEAR}-${CURRENT_YEAR + 1} intake)`;
+    const isFunded = !!analysis.isFullyFunded;
+    const successProb = computeSuccessProbability(finalScore, isFunded, trustInfo.tier);
+    const recReason = buildRecommendationReason(detectedCountry, finalScore);
+
+    await DB.prepare(`
+      INSERT OR IGNORE INTO scholarships
+      (title, organization, country, field, description, url, deadline, amount,
+       requirements, match_score, is_fully_funded, covers, source,
+       raw_content, status, is_expired, source_trust_level, source_domain,
+       success_probability, recommendation_reason, deadline_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'found', 0, ?, ?, ?, ?, ?)
+    `).bind(
+      analysis.title || r.title,
+      analysis.organization || r.source || "Unknown",
+      detectedCountry,
+      "Biotechnology",
+      r.snippet,
+      r.url,
+      deadline,
+      analysis.amount || "Fully Funded",
+      analysis.requirements || "See website",
+      finalScore,
+      isFunded ? 1 : 0,
+      analysis.covers || "Tuition, Stipend, Accommodation",
+      r.source || "web",
+      (r.snippet || "").substring(0, 2000),
+      trustInfo.tier,
+      trustInfo.domain,
+      successProb,
+      recReason,
+      classifyDeadline(deadline),
+    ).run();
+
+    found.push({ title: analysis.title || r.title, url: r.url, score: finalScore, deadline, country: detectedCountry, success_probability: successProb });
+  }
+
+  return { found, skippedExpired, queriesRun: queries.length };
+}
 
 // ── Get all scholarships from DB ─────────────────────────────
 scholarships.get("/", async (c) => {
@@ -135,101 +234,16 @@ scholarships.post("/search", async (c) => {
   try {
     const body = await c.req.json().catch(() => ({})) as any;
     const customQuery = body?.query || null;
-    const profileSummary = buildProfileSummary();
-    const found: any[] = [];
-    const skippedExpired: number[] = [];
 
-    // Date-aware queries: always include current/future year
-    const queries = customQuery
-      ? [customQuery]
-      : buildSearchQueries(USER_PROFILE).slice(0, 5);
-
-    for (const query of queries) {
-      await c.env.DB.prepare(
-        "INSERT INTO search_history (query, results_count) VALUES (?, 0)"
-      ).bind(query).run();
-
-      const results = await searchScholarships(query, 6);
-
-      for (const result of results.slice(0, 3)) {
-        const existing = await c.env.DB.prepare(
-          "SELECT id FROM scholarships WHERE url = ?"
-        ).bind(result.url).first();
-        if (existing) continue;
-
-        // Quick score
-        const quickScore = await scoreScholarship(
-          `${result.title}\n${result.snippet}`,
-          profileSummary
-        );
-        if (quickScore < 40) continue;
-
-        // Full page read for high-potential
-        let fullContent = result.snippet;
-        if (quickScore >= 55) {
-          const pageContent = await readWebpage(result.url);
-          if (pageContent) fullContent = pageContent;
-        }
-
-        // AI analysis with date awareness
-        const analysis = await analyzeScholarshipPage(fullContent, profileSummary);
-
-        // Skip expired scholarships
-        if (analysis.isExpired) {
-          skippedExpired.push(1);
-          continue;
-        }
-
-        const finalScore = Math.max(quickScore, analysis.matchScore);
-
-        // Detect country from URL or organization
-        const detectedCountry = analysis.country ||
-          USER_PROFILE.targetCountries.find(tc =>
-            (analysis.organization + result.url + result.title).toLowerCase()
-              .includes(tc.toLowerCase())
-          ) || "International";
-
-        const trustInfo = classifyUrl(result.url);
-
-        await c.env.DB.prepare(`
-          INSERT OR IGNORE INTO scholarships
-          (title, organization, country, description, url, deadline, amount,
-           requirements, match_score, is_fully_funded, covers, source,
-           raw_content, status, is_expired, source_trust_level, source_domain)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'found', 0, ?, ?)
-        `).bind(
-          analysis.title || result.title,
-          analysis.organization || result.source || "Unknown",
-          detectedCountry,
-          result.snippet,
-          result.url,
-          analysis.deadline || `Check website (${CURRENT_YEAR}-${CURRENT_YEAR + 1} intake)`,
-          analysis.amount || "Fully Funded",
-          analysis.requirements || "See website",
-          finalScore,
-          analysis.isFullyFunded ? 1 : 0,
-          analysis.covers || "Tuition, Stipend, Accommodation",
-          result.source || "web",
-          fullContent.substring(0, 2000),
-          trustInfo.tier,
-          trustInfo.domain,
-        ).run();
-
-        found.push({
-          title: analysis.title || result.title,
-          url: result.url,
-          score: finalScore,
-          deadline: analysis.deadline,
-          country: detectedCountry,
-        });
-      }
-    }
+    const { found, skippedExpired, queriesRun } = await runScholarshipSearch(c.env.DB, customQuery);
 
     return c.json({
       success: true,
-      message: `Search complete. Found ${found.length} new scholarships. Skipped ${skippedExpired.length} expired ones.`,
+      message: found.length
+        ? `Search complete. Found ${found.length} new scholarship${found.length === 1 ? "" : "s"}.${skippedExpired ? ` Skipped ${skippedExpired} expired.` : ""}`
+        : `Search complete. No new scholarships this run${skippedExpired ? ` (skipped ${skippedExpired} expired)` : ""}. Try again or check your API keys.`,
       new_scholarships: found,
-      queries_run: queries.length,
+      queries_run: queriesRun,
       current_date: CURRENT_DATE,
     });
   } catch (error: any) {
@@ -250,27 +264,31 @@ scholarships.post("/scan-known", async (c) => {
       ).bind(item.url).first();
       if (existing) continue;
 
-      const content = await readWebpage(item.url);
+      const content = await readWebpage(item.url, { trustedOnly: true });
       const analysis = await analyzeScholarshipPage(content || item.name, profileSummary);
       if (analysis.isExpired) continue;
 
       const score = await scoreScholarship(content || item.name, profileSummary);
 
       const trustInfo = classifyUrl(item.url);
+      const deadline = analysis.deadline || `Annual — Next intake: ${CURRENT_YEAR}-${CURRENT_YEAR + 1}`;
+      const successProb = computeSuccessProbability(score, true, trustInfo.tier);
+      const recReason = buildRecommendationReason(item.country, score);
 
       await c.env.DB.prepare(`
         INSERT OR IGNORE INTO scholarships
-        (title, organization, country, description, url, deadline, amount,
+        (title, organization, country, field, description, url, deadline, amount,
          requirements, match_score, is_fully_funded, covers, source, status, is_expired,
-         source_trust_level, source_domain)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'known_program', 'found', 0, ?, ?)
+         source_trust_level, source_domain, success_probability, recommendation_reason, deadline_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'known_program', 'found', 0, ?, ?, ?, ?, ?)
       `).bind(
         analysis.title || item.name,
         analysis.organization || item.name,
         item.country,
+        "Biotechnology",
         `Major scholarship program: ${item.name}`,
         item.url,
-        analysis.deadline || `Annual — Next intake: ${CURRENT_YEAR}-${CURRENT_YEAR + 1}`,
+        deadline,
         analysis.amount || "Fully Funded",
         analysis.requirements || "See official website",
         score,
@@ -278,6 +296,9 @@ scholarships.post("/scan-known", async (c) => {
         analysis.covers || "Tuition, Monthly Stipend, Accommodation, Health Insurance, Airfare",
         trustInfo.tier,
         trustInfo.domain,
+        successProb,
+        recReason,
+        classifyDeadline(deadline),
       ).run();
 
       added.push({ name: item.name, country: item.country, score });

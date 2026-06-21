@@ -3,6 +3,9 @@
 // Human-quality document generation + professor intelligence
 // ============================================================
 
+import { fetchWithRetry } from "./http";
+import { mapFieldToDepartments } from "./departments";
+
 // API key is injected at runtime via Cloudflare Worker env bindings
 // Set in .dev.vars for local dev, wrangler secret put for production
 // DO NOT hardcode API keys here
@@ -22,7 +25,7 @@ export interface AIMessage {
 
 export async function callAI(messages: AIMessage[], maxTokens: number = 4000): Promise<string> {
   try {
-    const response = await fetch(GROQ_API_URL, {
+    const response = await fetchWithRetry(GROQ_API_URL, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${getGroqKey()}`,
@@ -37,7 +40,7 @@ export async function callAI(messages: AIMessage[], maxTokens: number = 4000): P
         frequency_penalty: 0.25,
         presence_penalty: 0.15,
       }),
-    });
+    }, { label: "groq", retries: 2, timeoutMs: 60000 });
 
     if (!response.ok) {
       const err = await response.text();
@@ -413,12 +416,7 @@ PROPOSAL STRUCTURE (use these section headers, numbered):
 // PROFESSOR FINDER — Extract names, emails, research areas
 // from university faculty pages
 // ============================================================
-export async function analyzeProfessorPage(
-  pageContent: string,
-  university: string,
-  department: string,
-  profileSummary: string
-): Promise<Array<{
+export interface ProfessorRecord {
   name: string;
   title: string;
   email: string;
@@ -426,64 +424,101 @@ export async function analyzeProfessorPage(
   profileUrl: string;
   researchInterests: string;
   labName: string;
+  labWebsite: string;
+  googleScholarUrl: string;
+  recentPublications: string[];
   acceptingStudents: string;
   relevanceScore: number;
+  matchedTopics: string[];
+  matchedKeywords: string[];
+  recommendationReason: string;
   rawBio: string;
-}>> {
+}
+
+export async function analyzeProfessorPage(
+  pageContent: string,
+  university: string,
+  field: string,
+  profileSummary: string
+): Promise<ProfessorRecord[]> {
+  const { departments, areas } = mapFieldToDepartments(field);
+
   const messages: AIMessage[] = [
     {
       role: "system",
-      content: `You are an academic intelligence extractor. From faculty/department web pages, extract structured professor data and return ONLY valid JSON array. No markdown, no explanation.`,
+      content: `You are an academic intelligence extractor with a strict accuracy policy. You extract REAL faculty data from official university pages.
+
+ABSOLUTE RULES — accuracy over completeness:
+- Only extract information that is EXPLICITLY present in the page text provided.
+- NEVER invent or guess an email address. If no email is visible, return "".
+- NEVER invent publications, research areas, lab names, or profile URLs. If absent, return "" or [].
+- Do not output a person unless their NAME is clearly present as a faculty member/professor.
+- Return ONLY valid JSON. No markdown, no backticks, no commentary.`,
     },
     {
       role: "user",
-      content: `Extract all professors/faculty from this page content for ${university}, ${department}.
+      content: `Extract faculty/professors from this official page for "${university}".
+TARGET FIELD: ${field}  (relevant departments: ${departments.join(", ")})
 
-PAGE CONTENT:
-${pageContent.substring(0, 4000)}
+PAGE CONTENT (only use what is here — do not add outside knowledge):
+${pageContent.substring(0, 5000)}
 
-CANDIDATE PROFILE (to score relevance):
+APPLICANT PROFILE (for compatibility scoring):
 ${profileSummary}
 
-For each professor found, return a JSON array. Score relevance 0-100 based on how well their research aligns with: biotechnology, molecular biology, genetics, computational biology, cancer biology, immunology, bioinformatics, type-2 diabetes, metabolic diseases, or Akt/PI3K/mTOR signalling pathways.
+For each professor explicitly present, score research compatibility 0-100 against the applicant's interests and this field's research areas: ${areas.join(", ")}.
+Also identify which specific topics/keywords overlap between the professor's research and the applicant.
 
-Return ONLY this JSON array (no markdown, no backticks, no explanation):
+Return ONLY this JSON array (use "" or [] when info is NOT in the page — never fabricate):
 [
   {
-    "name": "Full Name",
-    "title": "Professor / Associate Professor / Assistant Professor / Dr.",
-    "email": "email@university.edu or empty string",
-    "linkedinUrl": "https://linkedin.com/in/... or empty string",
-    "profileUrl": "https://university.edu/faculty/... or empty string",
-    "researchInterests": "comma-separated research areas",
-    "labName": "lab or group name or empty string",
+    "name": "Full Name (required, must be in page)",
+    "title": "Professor / Associate Professor / Assistant Professor / Dr. or ''",
+    "email": "exact email from page or ''",
+    "linkedinUrl": "url if in page or ''",
+    "profileUrl": "official profile url if in page or ''",
+    "labWebsite": "lab/group website if in page or ''",
+    "googleScholarUrl": "scholar.google url if in page or ''",
+    "researchInterests": "comma-separated areas from page or ''",
+    "labName": "lab/group name from page or ''",
+    "recentPublications": ["paper title if in page", "..."],
     "acceptingStudents": "yes / no / unknown",
     "relevanceScore": 0-100,
-    "rawBio": "1-2 sentence bio summary"
+    "matchedTopics": ["overlapping research topic", "..."],
+    "matchedKeywords": ["keyword", "..."],
+    "recommendationReason": "1 sentence: why this professor fits this applicant (based only on page evidence)",
+    "rawBio": "1-2 sentence factual summary from the page"
   }
 ]
-
-If no professors found, return empty array: []`,
+If no real professors are present, return: []`,
     },
   ];
 
   try {
-    const result = await callAI(messages, 2000);
+    const result = await callAI(messages, 2500);
     const cleaned = result.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
     const parsed = JSON.parse(cleaned);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((p: any) => ({
-      name: p.name || "Unknown",
-      title: p.title || "Faculty",
-      email: p.email || "",
-      linkedinUrl: p.linkedinUrl || "",
-      profileUrl: p.profileUrl || "",
-      researchInterests: p.researchInterests || "",
-      labName: p.labName || "",
-      acceptingStudents: p.acceptingStudents || "unknown",
-      relevanceScore: Math.min(100, Math.max(0, parseInt(p.relevanceScore) || 40)),
-      rawBio: p.rawBio || "",
-    }));
+    return parsed
+      .filter((p: any) => p && p.name && String(p.name).trim().length > 1 && String(p.name).toLowerCase() !== "unknown")
+      .map((p: any) => ({
+        name: String(p.name).trim(),
+        title: p.title || "",
+        email: p.email || "",
+        linkedinUrl: p.linkedinUrl || "",
+        profileUrl: p.profileUrl || "",
+        labWebsite: p.labWebsite || "",
+        googleScholarUrl: p.googleScholarUrl || "",
+        researchInterests: p.researchInterests || "",
+        labName: p.labName || "",
+        recentPublications: Array.isArray(p.recentPublications) ? p.recentPublications.filter((x: any) => x).slice(0, 5) : [],
+        acceptingStudents: p.acceptingStudents || "unknown",
+        relevanceScore: Math.min(100, Math.max(0, parseInt(p.relevanceScore) || 40)),
+        matchedTopics: Array.isArray(p.matchedTopics) ? p.matchedTopics.filter((x: any) => x).slice(0, 6) : [],
+        matchedKeywords: Array.isArray(p.matchedKeywords) ? p.matchedKeywords.filter((x: any) => x).slice(0, 8) : [],
+        recommendationReason: p.recommendationReason || "",
+        rawBio: p.rawBio || "",
+      }));
   } catch {
     return [];
   }

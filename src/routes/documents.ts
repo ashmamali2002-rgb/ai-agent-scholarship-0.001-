@@ -26,6 +26,42 @@ documents.get("/list", async (c) => {
   }
 });
 
+// Readiness: which of the 4 core documents exist, what's missing, and a score
+// NOTE: must be registered BEFORE "/:id" or Hono matches "readiness" as an id.
+documents.get("/readiness", async (c) => {
+  try {
+    const { scholarship_id } = c.req.query();
+    const REQUIRED = [
+      { type: "resume", label: "Academic CV / Resume" },
+      { type: "cover_letter", label: "Cover Letter" },
+      { type: "personal_statement", label: "Personal Statement" },
+      { type: "research_proposal", label: "Research Proposal" },
+    ];
+
+    let query = "SELECT DISTINCT type FROM documents WHERE user_id = 1";
+    const params: any[] = [];
+    if (scholarship_id) { query += " AND scholarship_id = ?"; params.push(scholarship_id); }
+
+    const rows = await c.env.DB.prepare(query).bind(...params).all();
+    const present = new Set((rows.results as any[]).map(r => r.type));
+
+    const generated = REQUIRED.filter(d => present.has(d.type));
+    const missing = REQUIRED.filter(d => !present.has(d.type));
+    const readiness = Math.round((generated.length / REQUIRED.length) * 100);
+
+    return c.json({
+      success: true,
+      required: REQUIRED,
+      generated,
+      missing,
+      readiness_score: readiness,
+      scholarship_id: scholarship_id || null,
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
 // Get document content
 documents.get("/:id", async (c) => {
   try {

@@ -5,9 +5,15 @@
 
 // API key loaded from Cloudflare Worker environment (set in .dev.vars / wrangler secrets)
 // DO NOT hardcode secrets here
+import { fetchWithRetry } from "./http";
+
 function getResendKey(): string { return (globalThis as any).RESEND_API_KEY || ''; }
-// Resend free plan: "from" MUST be onboarding@resend.dev on sandbox
-const FROM_EMAIL = "onboarding@resend.dev";
+// Resend sandbox sender (onboarding@resend.dev) can ONLY deliver to your own
+// verified address. Once you verify a domain in Resend, set RESEND_FROM in
+// .dev.vars (e.g. "GETSCO <noreply@yourdomain.com>") to email anyone.
+function getFromEmail(): string {
+  return (globalThis as any).RESEND_FROM || "onboarding@resend.dev";
+}
 const FROM_NAME = "AI Scholarship Agent";
 const USER_EMAIL = "ashmamali2002@gmail.com";
 const USER_NAME = "Syed Ashmam Ali Shah";
@@ -21,22 +27,25 @@ export async function sendEmail(
   replyTo?: string
 ): Promise<{ success: boolean; id?: string; error?: string }> {
   try {
+    const from = (globalThis as any).RESEND_FROM
+      ? getFromEmail()
+      : `${FROM_NAME} <${getFromEmail()}>`;
     const body: any = {
-      from: `${FROM_NAME} <${FROM_EMAIL}>`,
+      from,
       to: [to],
       subject,
       html,
     };
     if (replyTo) body.reply_to = replyTo;
 
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await fetchWithRetry("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${getResendKey()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-    });
+    }, { label: "resend", retries: 1, timeoutMs: 20000 });
 
     const data = await response.json() as any;
 

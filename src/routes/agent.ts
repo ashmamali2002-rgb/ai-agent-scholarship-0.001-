@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { chatWithAgent } from "../lib/ai";
 import { buildProfileSummary } from "../lib/profile";
 import { sendEmail, notifyNewScholarship, notifyDeadlineReminder } from "../lib/email";
+import { runScholarshipSearch } from "./scholarships";
 
 type Bindings = { DB: D1Database };
 const agent = new Hono<{ Bindings: Bindings }>();
@@ -49,16 +50,12 @@ agent.post("/run", async (c) => {
     const count = await c.env.DB.prepare("SELECT COUNT(*) as count FROM scholarships").first() as any;
     steps.push(`Current scholarships in database: ${count?.count || 0}`);
 
-    // Step 2: Trigger a search
-    const searchRes = await fetch(`${new URL(c.req.url).origin}/api/scholarships/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-
-    if (searchRes.ok) {
-      const searchData = await searchRes.json() as any;
-      steps.push(`Search complete: ${searchData.message}`);
+    // Step 2: Trigger a search (direct call — no fragile self-fetch)
+    try {
+      const { found, skippedExpired } = await runScholarshipSearch(c.env.DB, null);
+      steps.push(`Search complete: found ${found.length} new scholarship${found.length === 1 ? "" : "s"}${skippedExpired ? `, skipped ${skippedExpired} expired` : ""}.`);
+    } catch (e: any) {
+      steps.push(`Search step failed: ${e?.message || "unknown error"} (check API keys in .dev.vars).`);
     }
 
     // Step 3: Get top unprocessed scholarships
@@ -140,7 +137,7 @@ agent.post("/test-email", async (c) => {
   <div style="background:linear-gradient(135deg,#1e40af,#0ea5e9);padding:28px 32px;">
     <p style="color:#bfdbfe;font-size:11px;margin:0 0 6px;letter-spacing:1.5px;text-transform:uppercase;">AI Scholarship Agent</p>
     <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">✅ Email System Confirmed Working!</h1>
-    <p style="color:#bfdbfe;margin:8px 0 0;font-size:13px;">June 7, 2026 — System Verification Test</p>
+    <p style="color:#bfdbfe;margin:8px 0 0;font-size:13px;">June 6, 2026 — System Verification Test</p>
   </div>
 
   <div style="padding:28px 32px;">
