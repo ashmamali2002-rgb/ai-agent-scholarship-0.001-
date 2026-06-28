@@ -891,7 +891,7 @@ function getProfessorsHTML(): string {
               <div style="flex:1;min-width:0;">
                 <p style="font-size:15px;font-weight:600;color:#1a1a2e;">\${p.name}</p>
                 <p style="font-size:12px;color:#888;">\${p.title||'Faculty'} · \${p.university||p.field||''}</p>
-                <p style="font-size:11px;color:#aaa;">\${p.department||''}\${p.country?' · '+p.country:''}</p>
+                <p style="font-size:11px;color:#aaa;">\${p.department||''}\${(p.country&&p.location_status!=='unverified')?' · '+p.country:' · <span style=\\'color:#c0392b;\\'>Location Verification Required</span>'}</p>
               </div>
               <div style="text-align:center;flex-shrink:0;">
                 <div class="score-ring \${cls}">\${sc}</div>
@@ -1340,6 +1340,18 @@ function getDataExtractHTML(): string {
   </div>
 
   <div style="padding:0 36px 36px;">
+
+    <!-- Data Quality panel -->
+    <div class="card" style="padding:18px 20px;margin-bottom:20px;border-left:3px solid #2d7a4f;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+        <p style="font-weight:600;font-size:14px;"><i class="fas fa-shield-halved" style="color:#2d7a4f;margin-right:7px;"></i>Data Quality &amp; Verification</p>
+        <button class="btn-outline btn-sm" onclick="runVerify()"><i class="fas fa-circle-check"></i> Run Verification</button>
+      </div>
+      <div id="qualityGrid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;">
+        <p style="grid-column:1/-1;color:#aaa;font-size:13px;">Loading quality metrics…</p>
+      </div>
+      <div id="qualityFails" style="margin-top:12px;"></div>
+    </div>
 
     <!-- Summary Strip -->
     <div id="summaryStrip" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px;">
@@ -1923,8 +1935,37 @@ function getDataExtractHTML(): string {
       toast('Downloading full data export as JSON…');
     }
 
+    // ── Data quality metrics ─────────────────────────────────
+    async function loadQuality(){
+      try{
+        const r = await axios.get('/api/agent/quality');
+        const d = r.data;
+        const sch = d.scholarships||{}, prof = d.professors||{}, refs = d.references||{};
+        const cell = (val,label,col)=>'<div class="stat-card" style="text-align:center;padding:14px 8px;"><p style="font-size:24px;font-weight:700;color:'+col+';line-height:1;">'+val+'</p><p style="font-size:11px;color:#aaa;margin-top:3px;">'+label+'</p></div>';
+        document.getElementById('qualityGrid').innerHTML =
+          cell((d.verification_success_rate||0)+'%','Verification Success','#2d7a4f')+
+          cell(sch.verified||0,'Verified Scholarships','#2d5fa8')+
+          cell(sch.unverified||0,'Unverified (hidden)','#a07030')+
+          cell(d.invalid_records_detected||0,'Invalid Records Detected','#c0392b')+
+          cell((refs.refs_verified||0)+'/'+(refs.refs_total||0),'References Verified','#7c3aed');
+        const fails = d.recent_failures||[];
+        document.getElementById('qualityFails').innerHTML = fails.length
+          ? '<details><summary style="cursor:pointer;font-size:12px;color:#888;">Recent verification failures ('+fails.length+')</summary><div style="margin-top:8px;display:flex;flex-direction:column;gap:4px;">'+fails.map(f=>'<p style="font-size:11.5px;color:#777;"><span style="color:#c0392b;">✗</span> <strong>'+f.entity_type+'</strong> · '+(f.check_name||'')+' · '+(f.entity_ref||'').substring(0,50)+' <span style="color:#bbb;">('+(f.reason||'')+')</span></p>').join('')+'</div></details>'
+          : '<p style="font-size:12px;color:#2d7a4f;"><i class="fas fa-check" style="margin-right:5px;"></i>No verification failures recorded.</p>';
+      }catch(e){ document.getElementById('qualityGrid').innerHTML='<p style="grid-column:1/-1;color:#c0392b;font-size:13px;">Could not load quality metrics.</p>'; }
+    }
+    async function runVerify(){
+      toast('Running verification pass — checking links…');
+      try{
+        const r = await axios.post('/api/scholarships/verify-all');
+        toast(r.data.message);
+        loadQuality(); loadAll();
+      }catch(e){ toast('Verification failed','err'); }
+    }
+
     // ── Init ─────────────────────────────────────────────────
     loadAll();
+    loadQuality();
   </script>`;
   return getBaseLayout("Data Preview", "data", c);
 }

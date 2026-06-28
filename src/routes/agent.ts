@@ -384,4 +384,49 @@ agent.get("/preview-stats", async (c) => {
   }
 });
 
+// ── QUALITY / VERIFICATION METRICS ───────────────────────────
+agent.get("/quality", async (c) => {
+  try {
+    const DB = c.env.DB;
+    const [logTotals, byType, sch, prof, docs, recentFails] = await Promise.all([
+      DB.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN result='pass' THEN 1 ELSE 0 END) as passes, SUM(CASE WHEN result='fail' THEN 1 ELSE 0 END) as fails FROM verification_log").first(),
+      DB.prepare("SELECT entity_type, result, COUNT(*) as n FROM verification_log GROUP BY entity_type, result").all(),
+      DB.prepare("SELECT SUM(CASE WHEN verified=1 THEN 1 ELSE 0 END) as verified, SUM(CASE WHEN (verified=0 OR verified IS NULL) AND (is_expired=0 OR is_expired IS NULL) THEN 1 ELSE 0 END) as unverified, SUM(CASE WHEN is_expired=1 THEN 1 ELSE 0 END) as expired, SUM(CASE WHEN link_ok=0 THEN 1 ELSE 0 END) as dead_links FROM scholarships").first(),
+      DB.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN verified=1 THEN 1 ELSE 0 END) as verified, SUM(CASE WHEN email IS NOT NULL AND email <> '' THEN 1 ELSE 0 END) as with_email FROM professors").first(),
+      DB.prepare("SELECT COALESCE(SUM(references_total),0) as refs_total, COALESCE(SUM(references_verified),0) as refs_verified FROM documents").first(),
+      DB.prepare("SELECT entity_type, entity_ref, check_name, reason, created_at FROM verification_log WHERE result='fail' ORDER BY id DESC LIMIT 10").all(),
+    ]);
+
+    // Compute a MEANINGFUL success rate from real per-unit data:
+    //  - references: verified / total (Crossref)
+    //  - professors: validation passes / (passes + fails)
+    const bt = (byType as any).results || [];
+    const getN = (t: string, r: string) => (bt.find((x: any) => x.entity_type === t && x.result === r)?.n) || 0;
+    const profPass = getN("professor", "pass");
+    const profFail = getN("professor", "fail");
+    const refTotal = (docs as any)?.refs_total || 0;
+    const refVerified = (docs as any)?.refs_verified || 0;
+
+    const successUnits = refVerified + profPass;
+    const totalUnits = refTotal + profPass + profFail;
+    const successRate = totalUnits ? Math.round((successUnits / totalUnits) * 100) : 100;
+    const invalid = (refTotal - refVerified) + profFail;
+
+    return c.json({
+      success: true,
+      verification_success_rate: successRate,
+      total_checks: totalUnits,
+      invalid_records_detected: invalid,
+      scholarships: sch,
+      professors: prof,
+      references: docs,
+      professor_validation: { passed: profPass, rejected: profFail },
+      by_type: bt,
+      recent_failures: (recentFails as any).results,
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
 export default agent;

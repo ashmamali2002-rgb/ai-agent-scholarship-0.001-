@@ -94,6 +94,13 @@ function looksAcademic(hostname: string): boolean {
   return ACADEMIC_HINTS.some(h => hostname.includes(h));
 }
 
+// Third-party aggregators / social to skip during professor discovery —
+// we want primary institutional faculty pages, not profiles about them.
+const PROF_AGGREGATORS = [
+  "researchgate.net", "academia.edu", "wikipedia.org", "linkedin.com",
+  "scholar.google", "semanticscholar.org", "scopus.com", "orcid.org", "mendeley.com",
+];
+
 export function classifyUrl(url: string): { trusted: boolean; tier: "official" | "recognised" | "unknown"; domain: string } {
   try {
     const hostname = new URL(url).hostname.toLowerCase();
@@ -283,18 +290,21 @@ export async function searchProfessors(university: string, field: string, countr
         let hostname = "";
         try { hostname = new URL(url).hostname.toLowerCase(); } catch { continue; }
         if (BLOCKED_DOMAINS.some(d => hostname.includes(d))) continue;
-        const { trusted } = classifyUrl(url);
+        // Skip third-party aggregators — we want primary institutional pages.
+        if (PROF_AGGREGATORS.some(d => hostname.includes(d))) continue;
         const uniSlug = uni.toLowerCase().replace(/\s+/g, "");
         const isUniPage = (uniSlug && hostname.includes(uniSlug)) || looksAcademic(hostname);
-        // In university mode, prefer academic domains; in global mode accept academic only
-        if (!trusted && !isUniPage) continue;
+        // University-scoped query → accept institutional results liberally; the
+        // persistence validation layer enforces official affiliation precisely.
+        // Global mode (no university) still requires an academic-looking domain.
+        if (!uni && !isUniPage) continue;
         seen.add(url);
         allResults.push({
           title: item.title || "",
           url,
           snippet: item.snippet || "",
           source: hostname,
-          trustLevel: trusted ? "recognised" : "unknown",
+          trustLevel: classifyUrl(url).trusted ? "recognised" : "unknown",
         });
       }
     } catch {}

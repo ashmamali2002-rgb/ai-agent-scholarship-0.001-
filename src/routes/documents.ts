@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { generateResume, generatePersonalStatement, generateCoverLetter, generateResearchProposal } from "../lib/ai";
 import { USER_PROFILE } from "../lib/profile";
+import { verifyDocumentReferences, logVerification } from "../lib/verify";
 
 type Bindings = { DB: D1Database };
 const documents = new Hono<{ Bindings: Bindings }>();
@@ -166,12 +167,16 @@ documents.post("/generate/research-proposal", async (c) => {
     const title = scholarship_title || "Research Scholarship";
     const fld = field || "Biotechnology";
 
-    const content = await generateResearchProposal(title, fld, USER_PROFILE);
+    const raw = await generateResearchProposal(title, fld, USER_PROFILE);
+    // Verify every citation against Crossref; unverifiable ones are flagged.
+    const ver = await verifyDocumentReferences(raw);
+    const content = ver.content;
+    await logVerification(c.env.DB, "reference", `Research Proposal for ${title}`, "crossref", ver.unverified ? "fail" : "pass", `${ver.verified}/${ver.total} verified`);
 
     const result = await c.env.DB.prepare(`
-      INSERT INTO documents (user_id, scholarship_id, type, title, content) 
-      VALUES (1, ?, 'research_proposal', ?, ?)
-    `).bind(scholarship_id || null, `Research Proposal for ${title}`, content).run();
+      INSERT INTO documents (user_id, scholarship_id, type, title, content, references_total, references_verified)
+      VALUES (1, ?, 'research_proposal', ?, ?, ?, ?)
+    `).bind(scholarship_id || null, `Research Proposal for ${title}`, content, ver.total, ver.verified).run();
 
     return c.json({
       success: true,
@@ -179,6 +184,7 @@ documents.post("/generate/research-proposal", async (c) => {
       type: "research_proposal",
       title: `Research Proposal for ${title}`,
       content,
+      references: { total: ver.total, verified: ver.verified, unverified: ver.unverified },
     });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
@@ -201,18 +207,22 @@ documents.post("/generate/all", async (c) => {
     const country = scholarship?.country || "International";
     const field = scholarship?.field || "Biotechnology";
 
-    const [resume, personalStatement, coverLetter, researchProposal] = await Promise.all([
+    const [resume, personalStatement, coverLetter, researchProposalRaw] = await Promise.all([
       generateResume(title, field, USER_PROFILE),
       generatePersonalStatement(title, org, country, field, USER_PROFILE),
       generateCoverLetter(title, org, country, USER_PROFILE),
       generateResearchProposal(title, field, USER_PROFILE),
     ]);
 
+    // Verify the research proposal's references against Crossref
+    const ver = await verifyDocumentReferences(researchProposalRaw);
+    await logVerification(c.env.DB, "reference", `Research Proposal for ${title}`, "crossref", ver.unverified ? "fail" : "pass", `${ver.verified}/${ver.total} verified`);
+
     const docs = [
       { type: "resume", title: `Resume for ${title}`, content: resume },
       { type: "personal_statement", title: `Personal Statement for ${title}`, content: personalStatement },
       { type: "cover_letter", title: `Cover Letter for ${title}`, content: coverLetter },
-      { type: "research_proposal", title: `Research Proposal for ${title}`, content: researchProposal },
+      { type: "research_proposal", title: `Research Proposal for ${title}`, content: ver.content },
     ];
 
     const ids: number[] = [];

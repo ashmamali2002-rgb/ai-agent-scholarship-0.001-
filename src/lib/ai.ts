@@ -330,7 +330,7 @@ export async function generateResearchProposal(
 4. Originality — not a replication study, but a natural extension of prior work
 5. No vague statements — every claim has a specific reference or explanation
 6. Scientific writing style — third person for background, first person only for objectives and the applicant's prior work
-7. All references should be to real, plausible sources (Nature, Cell, PLOS ONE, Bioinformatics, Nucleic Acids Research, Journal of Biological Chemistry, etc.)
+7. REFERENCES — CRITICAL ACCURACY RULE: Do NOT fabricate citations. Only list references you are confident are REAL, well-known published works (correct title, authors, journal, year). Every reference will be automatically checked against the Crossref scholarly database and any that cannot be verified will be removed. It is far better to list 4 genuinely real references than 10 invented ones. Never invent DOIs, authors, years, or journal names.
 — Length: 1100–1400 words of scientific content (excluding title and reference list)`,
     },
     {
@@ -406,7 +406,7 @@ PROPOSAL STRUCTURE (use these section headers, numbered):
     — How this builds the applicant's research programme towards a PhD
 
 11. REFERENCES
-    List 8–10 references in APA format. Use real journal names. Plausible authors and years (2018–2025).`,
+    List ONLY references you are confident are real, verifiable published works (APA format). Each will be checked against Crossref — invented references will be deleted and shown as "Reference could not be verified." Prefer fewer real references over many fabricated ones. Do not invent DOIs, authors, years, or journals.`,
     },
   ];
   return await callAI(messages, 4000);

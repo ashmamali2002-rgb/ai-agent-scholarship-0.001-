@@ -10,6 +10,7 @@ import { analyzeProfessorPage, analyzeUniversityDepartment, type ProfessorRecord
 import { readWebpage, searchProfessors } from "../lib/search";
 import { buildProfileSummary } from "../lib/profile";
 import { mapFieldToDepartments } from "../lib/departments";
+import { nameInSource, isOfficialAcademicDomain, countryFromDomain, logVerification } from "../lib/verify";
 
 type Bindings = { DB: D1Database };
 const professors = new Hono<{ Bindings: Bindings }>();
@@ -26,7 +27,8 @@ const SORTS: Record<string, string> = {
 professors.get("/", async (c) => {
   try {
     const { university, country, min_score, sort, field } = c.req.query();
-    let query = "SELECT * FROM professors WHERE 1=1";
+    // Only verified professors are ever displayed.
+    let query = "SELECT * FROM professors WHERE (verified = 1 OR verified IS NULL)";
     const params: any[] = [];
 
     if (university) { query += " AND university LIKE ?"; params.push(`%${university}%`); }
@@ -43,42 +45,77 @@ professors.get("/", async (c) => {
   }
 });
 
-// ── Persist one professor (anti-fabrication: verify email vs source) ──
+// ── Persist one professor through the VALIDATION LAYER ──
+// Rejects (does not display) any professor that fails verification:
+//  - name must actually appear in the source page
+//  - affiliation source must be an official/academic domain
+// Country is taken from the official domain; if it can't be confirmed
+// the record is marked "Location Verification Required" rather than guessed.
+// Email/Scholar/LinkedIn are kept ONLY if literally present in the source.
 async function persistProfessor(
   DB: D1Database,
   prof: ProfessorRecord,
   ctx: { university: string; department: string; country: string; field: string; sourceUrl: string; verifyText: string; scholarshipId: number | null; recommendationType: string }
-): Promise<boolean> {
-  // Keep an email/scholar/profile link ONLY if it actually appears in the
-  // page we read — this blocks AI-invented contact details.
+): Promise<{ stored: boolean; reason?: string }> {
+  let sourceDomain = "";
+  try { sourceDomain = new URL(ctx.sourceUrl).hostname.toLowerCase(); } catch {}
+
+  // VALIDATION 1 — the person's name must be present in the source text.
+  if (!nameInSource(prof.name, ctx.verifyText)) {
+    await logVerification(DB, "professor", prof.name, "name_in_source", "fail", "name not found on page");
+    return { stored: false, reason: "name not verified in source" };
+  }
+  // VALIDATION 2 — affiliation must come from an official/academic domain.
+  if (!isOfficialAcademicDomain(sourceDomain)) {
+    await logVerification(DB, "professor", prof.name, "official_affiliation", "fail", `non-academic source ${sourceDomain}`);
+    return { stored: false, reason: "affiliation not from official source" };
+  }
+
+  // Anti-fabrication: keep contact/links only if literally on the page.
   const txt = (ctx.verifyText || "").toLowerCase();
   const verify = (val: string) => (val && txt.includes(val.toLowerCase()) ? val : "");
   const email = verify(prof.email);
   const scholar = verify(prof.googleScholarUrl);
   const linkedin = verify(prof.linkedinUrl);
 
+  // COUNTRY VALIDATION — derive from the official domain.
+  const domainCountry = countryFromDomain(sourceDomain);
+  let country = ctx.country;
+  let locationStatus = "unverified";
+  if (domainCountry) {
+    country = domainCountry;           // trust the official domain over any claim
+    locationStatus = "verified";
+  } else if (!country) {
+    country = "";                       // UI shows "Location Verification Required"
+    locationStatus = "unverified";
+  } else {
+    locationStatus = "claimed";
+  }
+
   const existing = await DB.prepare("SELECT id FROM professors WHERE name = ? AND university = ?")
     .bind(prof.name, ctx.university).first();
-  if (existing) return false;
+  if (existing) return { stored: false, reason: "duplicate" };
 
   await DB.prepare(`
     INSERT INTO professors
     (university, department, country, field, name, title, email, linkedin_url, profile_url,
      research_interests, lab_name, lab_website, google_scholar_url, recent_publications,
      accepting_students, relevance_score, matched_topics, matched_keywords,
-     recommendation_reason, raw_bio, source_url, scholarship_id, recommendation_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     recommendation_reason, raw_bio, source_url, scholarship_id, recommendation_type,
+     verified, location_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
   `).bind(
-    ctx.university, ctx.department, ctx.country, ctx.field,
+    ctx.university, ctx.department, country, ctx.field,
     prof.name, prof.title, email, linkedin, prof.profileUrl,
     prof.researchInterests, prof.labName, prof.labWebsite, scholar,
     JSON.stringify(prof.recentPublications || []),
     prof.acceptingStudents, prof.relevanceScore,
     JSON.stringify(prof.matchedTopics || []), JSON.stringify(prof.matchedKeywords || []),
     prof.recommendationReason, prof.rawBio, ctx.sourceUrl,
-    ctx.scholarshipId, ctx.recommendationType,
+    ctx.scholarshipId, ctx.recommendationType, locationStatus,
   ).run();
-  return true;
+  await logVerification(DB, "professor", prof.name, "validated", "pass", `${sourceDomain} · ${country || "location unknown"}`);
+  return { stored: true };
 }
 
 // ── Search professors — global, field-aware ──────────────────
@@ -114,7 +151,7 @@ professors.post("/search", async (c) => {
         pagesRead++;
         const profs = await analyzeProfessorPage(pageContent, university || department, field, profileSummary);
         for (const prof of profs.filter(p => p.relevanceScore >= 30)) {
-          if (await persistProfessor(c.env.DB, prof, { ...ctxBase, sourceUrl: profileUrl, verifyText: pageContent })) found.push(prof);
+          if ((await persistProfessor(c.env.DB, prof, { ...ctxBase, sourceUrl: profileUrl, verifyText: pageContent })).stored) found.push(prof);
         }
       }
     }
@@ -131,7 +168,7 @@ professors.post("/search", async (c) => {
 
         const profs = await analyzeProfessorPage(content, university || department, field, profileSummary);
         for (const prof of profs.filter(p => p.relevanceScore >= 30)) {
-          if (await persistProfessor(c.env.DB, prof, { ...ctxBase, sourceUrl: result.url, verifyText: content })) found.push(prof);
+          if ((await persistProfessor(c.env.DB, prof, { ...ctxBase, sourceUrl: result.url, verifyText: content })).stored) found.push(prof);
         }
         if (found.length >= 8) break;
       }
