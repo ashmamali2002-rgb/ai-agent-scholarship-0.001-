@@ -251,6 +251,18 @@ scholarships.get("/:id", async (c) => {
   }
 });
 
+// ── Delete a scholarship (and any saved refs / applications) ─
+scholarships.delete("/:id", async (c) => {
+  try {
+    const id = c.req.param("id");
+    await c.env.DB.prepare("DELETE FROM applications WHERE scholarship_id = ?").bind(id).run();
+    await c.env.DB.prepare("DELETE FROM scholarships WHERE id = ?").bind(id).run();
+    return c.json({ success: true, message: "Scholarship deleted" });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
 // ── AI-powered scholarship search ────────────────────────────
 scholarships.post("/search", async (c) => {
   try {

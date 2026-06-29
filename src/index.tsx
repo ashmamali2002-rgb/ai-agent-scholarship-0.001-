@@ -244,11 +244,17 @@ function getBaseLayout(title: string, activeNav: string, content: string): strin
       if(iso) return new Date(parseInt(iso[1]), parseInt(iso[2])-1, parseInt(iso[3]));
       return null;
     }
+    function isNewlyAdded(s){
+      if(!s.created_at) return false;
+      const days=(Date.now()-new Date(s.created_at).getTime())/(1000*60*60*24);
+      return days>=0 && days<7;
+    }
     function schBadges(s){
       let b = ''; const score = s.match_score||0;
       if(s.is_fully_funded) b += '<span class="badge-green"><i class="fas fa-check-circle" style="margin-right:3px;"></i>Fully Funded</span>';
       if(score>=80) b += '<span class="badge-purple"><i class="fas fa-star" style="margin-right:3px;"></i>High Match</span>';
-      if(s.created_at){ const d=new Date(s.created_at); const today=new Date(); if(d.toDateString()===today.toDateString()) b += '<span class="badge-amber"><i class="fas fa-bolt" style="margin-right:3px;"></i>New</span>'; }
+      // Newly added classification: highlight scholarships added in the last 7 days
+      if(isNewlyAdded(s)) b += '<span class="badge-amber" style="background:#fff4e0;"><i class="fas fa-bolt" style="margin-right:3px;"></i>Newly Added</span>';
       const dl = parseDeadline(s.deadline);
       if(dl){ const days=Math.ceil((dl-new Date())/(1000*60*60*24)); if(days>=0 && days<=60) b += '<span class="badge-soon"><i class="fas fa-clock" style="margin-right:3px;"></i>Closing Soon · '+days+'d</span>'; }
       return b;
@@ -684,6 +690,7 @@ function getScholarshipsHTML(): string {
       </select>
       <select id="fQuick" onchange="loadList()" style="width:170px;">
         <option value="">All Scholarships</option>
+        <option value="new">Newly Added (7 days)</option>
         <option value="high">High Match (≥80%)</option>
         <option value="funded">Fully Funded</option>
         <option value="soon">Closing Soon</option>
@@ -716,11 +723,13 @@ function getScholarshipsHTML(): string {
         const r = await axios.get(url);
         let list = r.data.scholarships||[];
         // client-side quick filters
-        if(quick==='high') list = list.filter(s=>(s.match_score||0)>=80);
+        if(quick==='new') list = list.filter(s=>isNewlyAdded(s));
+        else if(quick==='high') list = list.filter(s=>(s.match_score||0)>=80);
         else if(quick==='funded') list = list.filter(s=>s.is_fully_funded);
         else if(quick==='soon') list = list.filter(s=>{const d=parseDeadline(s.deadline);if(!d)return false;const days=Math.ceil((d-new Date())/(1000*60*60*24));return days>=0&&days<=60;});
         schItems = list;
-        document.getElementById('listCount').textContent=list.length+' scholarships';
+        const newCount = list.filter(s=>isNewlyAdded(s)).length;
+        document.getElementById('listCount').innerHTML = list.length+' scholarships'+(newCount?' · <span style="color:#b45309;font-weight:600;">'+newCount+' newly added</span>':'');
         if(!list.length){box.innerHTML='<div style="text-align:center;padding:60px 0;color:#aaa;"><i class="fas fa-search" style="font-size:40px;color:#ddd;display:block;margin-bottom:14px;"></i><p>No results. Click Search or adjust filters.</p></div>';return;}
         box.innerHTML = list.map(s=>{
           const sc = s.match_score||0;
@@ -750,6 +759,7 @@ function getScholarshipsHTML(): string {
                 <a href="\${s.url}" target="_blank" class="btn-outline btn-sm"><i class="fas fa-external-link-alt"></i> View</a>
                 <button onclick="applyFor(\${s.id})" class="btn-primary btn-sm"><i class="fas fa-plus"></i> Apply</button>
                 <button onclick="genDocs(\${s.id})" class="btn-gold btn-sm"><i class="fas fa-file-alt"></i> Docs</button>
+                <button onclick="delScholarship(\${s.id})" class="btn-outline btn-sm" style="color:#c0392b;border-color:#f0b8b8;"><i class="fas fa-trash"></i> Delete</button>
               </div>
             </div>
           </div>\`;
@@ -768,6 +778,12 @@ function getScholarshipsHTML(): string {
       toast('Generating documents — ~30-60 seconds...');
       try{await axios.post('/api/documents/generate/all',{scholarship_id:id});toast('Documents ready!');window.location.href='/documents';}
       catch(e){toast('Generation failed','err');}
+    }
+
+    async function delScholarship(id){
+      if(!confirm('Delete this scholarship? This cannot be undone.'))return;
+      try{await axios.delete('/api/scholarships/'+id);toast('Scholarship deleted');loadList();}
+      catch(e){toast('Delete failed','err');}
     }
 
     async function doSearch(){toast('Searching official sources...');try{const r=await axios.post('/api/scholarships/search',{});toast(r.data.message);loadList();}catch(e){toast('Search failed','err');}}
