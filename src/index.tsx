@@ -361,6 +361,7 @@ function getBaseLayout(title: string, activeNav: string, content: string): strin
         <p id="docModalTitle" style="font-weight:600;font-size:15px;"></p>
         <div style="display:flex;gap:8px;">
           <button onclick="copyDoc()" class="btn-outline btn-sm"><i class="fas fa-copy"></i> Copy</button>
+          <button onclick="downloadOpenDoc()" class="btn-gold btn-sm"><i class="fas fa-download"></i> Download</button>
           <button onclick="closeDocModal()" style="background:none;border:none;font-size:20px;color:#aaa;cursor:pointer;">&times;</button>
         </div>
       </div>
@@ -435,6 +436,24 @@ function getBaseLayout(title: string, activeNav: string, content: string): strin
     function copyDoc(){
       navigator.clipboard.writeText(document.getElementById('docModalContent').textContent).then(()=>toast('Copied to clipboard!'));
     }
+    function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    // Build a clean, Word-compatible .doc with proper typography + heading.
+    function downloadDocFile(title, content){
+      const safe=(title||'GETSCO_Document').replace(/[^a-z0-9]+/gi,'_').replace(/^_+|_+$/g,'');
+      const today=new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
+      const paras=(content||'').split(/\\n\\s*\\n/).map(blk=>{
+        const lines=blk.split(/\\n/).map(l=>escHtml(l)).join('<br/>');
+        return '<p style="margin:0 0 14px;text-align:justify;">'+lines+'</p>';
+      }).join('');
+      const html='<!DOCTYPE html><html xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8">'+
+        '<style>@page{size:A4;margin:2.2cm;} body{font-family:Georgia,\\'Times New Roman\\',serif;font-size:12pt;line-height:1.7;color:#1a1a1a;}'+
+        'h1{font-family:Georgia,serif;font-size:17pt;color:#1a1a2e;margin:0 0 4px;} .meta{color:#888;font-size:9pt;margin-bottom:22px;border-bottom:1px solid #ccc;padding-bottom:10px;}</style></head>'+
+        '<body><h1>'+escHtml(title)+'</h1><div class="meta">Prepared with GETSCO · '+today+'</div>'+paras+'</body></html>';
+      const blob=new Blob(['\\ufeff'+html],{type:'application/msword'});
+      const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=safe+'.doc'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+      toast('Downloading '+safe+'.doc');
+    }
+    function downloadOpenDoc(){ downloadDocFile(document.getElementById('docModalTitle').textContent, document.getElementById('docModalContent').textContent); }
 
     // Test email
     async function testEmail(){
@@ -1204,6 +1223,7 @@ function getDocumentsHTML(): string {
           <p style="font-size:11px;color:#aaa;margin-bottom:12px;">\${labels[d.type]||d.type}</p>
           <div style="display:flex;gap:7px;">
             <button onclick="viewDoc(\${d.id})" class="btn-primary btn-sm" style="flex:1;justify-content:center;"><i class="fas fa-eye"></i> View</button>
+            <button onclick="downloadDocById(\${d.id})" class="btn-gold btn-sm" title="Download as Word"><i class="fas fa-download"></i></button>
             <button onclick="delDoc(\${d.id})" style="background:#fff5f5;border:1px solid #f0b8b8;color:#c0392b;padding:6px 12px;border-radius:7px;font-size:12px;cursor:pointer;"><i class="fas fa-trash"></i></button>
           </div>
         </div>\`).join('');
@@ -1213,6 +1233,11 @@ function getDocumentsHTML(): string {
     async function viewDoc(id){
       try{const r=await axios.get('/api/documents/'+id);const d=r.data.document;openDoc(d.title,d.content);}
       catch(e){toast('Failed to load','err');}
+    }
+
+    async function downloadDocById(id){
+      try{const r=await axios.get('/api/documents/'+id);const d=r.data.document;downloadDocFile(d.title,d.content);}
+      catch(e){toast('Download failed','err');}
     }
 
     async function delDoc(id){
