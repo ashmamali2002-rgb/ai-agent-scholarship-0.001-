@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/cloudflare-workers";
+import { getCookie } from "hono/cookie";
+import { supabaseConfigured } from "./lib/supabase";
 import profileRoutes from "./routes/profile";
 import scholarshipRoutes from "./routes/scholarships";
 import documentRoutes from "./routes/documents";
@@ -50,13 +52,24 @@ app.route("/api/auth", authRoutes);
 
 app.get("/api/health", (c) => c.json({ status: "ok", agent: "GETSCO", version: "2.0.0" }));
 
-app.get("/", async (c) => c.html(getDashboardHTML()));
-app.get("/scholarships", async (c) => c.html(getScholarshipsHTML()));
-app.get("/applications", async (c) => c.html(getApplicationsHTML()));
-app.get("/documents", async (c) => c.html(getDocumentsHTML()));
-app.get("/profile", async (c) => c.html(getProfileHTML()));
-app.get("/professors", async (c) => c.html(getProfessorsHTML()));
-app.get("/data", async (c) => c.html(getDataExtractHTML()));
+// Page-level auth gate: if Supabase is configured and there's no session
+// cookie, send the visitor to /login. (The API routes do full token
+// validation; this is just a fast redirect so logged-out users can't view
+// the app shell.)
+const requireAuth = async (c: any, next: any) => {
+  if (supabaseConfigured() && !getCookie(c, "sb-access-token")) {
+    return c.redirect("/login");
+  }
+  await next();
+};
+
+app.get("/", requireAuth, async (c) => c.html(getDashboardHTML()));
+app.get("/scholarships", requireAuth, async (c) => c.html(getScholarshipsHTML()));
+app.get("/applications", requireAuth, async (c) => c.html(getApplicationsHTML()));
+app.get("/documents", requireAuth, async (c) => c.html(getDocumentsHTML()));
+app.get("/profile", requireAuth, async (c) => c.html(getProfileHTML()));
+app.get("/professors", requireAuth, async (c) => c.html(getProfessorsHTML()));
+app.get("/data", requireAuth, async (c) => c.html(getDataExtractHTML()));
 app.get("/login", (c) => c.html(getAuthHTML("login")));
 app.get("/signup", (c) => c.html(getAuthHTML("signup")));
 
@@ -196,6 +209,18 @@ function getBaseLayout(title: string, activeNav: string, content: string): strin
       document.getElementById('appSidebar').classList.toggle('open');
       document.getElementById('sidebarBackdrop').classList.toggle('open');
     }
+    async function sbLogout(){ try{ await axios.post('/api/auth/logout'); }catch(e){} window.location.href='/login'; }
+    (async function loadSidebarUser(){
+      try{
+        const r = await axios.get('/api/auth/me');
+        const u = r.data.user||{};
+        const name = (u.full_name && u.full_name.trim()) ? u.full_name : (u.email||'').split('@')[0];
+        const nm = document.getElementById('sbUserName'); if(nm) nm.textContent = name||'My Account';
+        const em = document.getElementById('sbUserEmail'); if(em) em.textContent = u.email||'';
+        const ini = document.getElementById('sbInitials');
+        if(ini){ const parts=(name||'U').trim().split(/\\s+/); ini.textContent=((parts[0]||'')[0]||'')+((parts[1]||'')[0]||''); }
+      }catch(e){ /* not logged in; page guard handles redirect */ }
+    })();
     function loadingSkeleton(rows){
       rows = rows || 3; let h = '';
       for(let i=0;i<rows;i++){ h += '<div class="skel" style="height:64px;margin-bottom:12px;"></div>'; }
@@ -245,11 +270,12 @@ function getBaseLayout(title: string, activeNav: string, content: string): strin
         </div>
       </div>
       <div style="background:rgba(200,169,126,0.1);border:1px solid rgba(200,169,126,0.2);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:8px;">
-        <div style="width:32px;height:32px;background:linear-gradient(135deg,#c8a97e,#a07850);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;flex-shrink:0;">SA</div>
-        <div>
-          <p style="font-size:12px;font-weight:600;color:rgba(255,255,255,0.9);line-height:1.2;">Syed Ashmam Ali Shah</p>
-          <p style="font-size:10px;color:rgba(255,255,255,0.4);">BSc Biotechnology · Peshawar</p>
+        <div id="sbInitials" style="width:32px;height:32px;background:linear-gradient(135deg,#c8a97e,#a07850);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;flex-shrink:0;">·</div>
+        <div style="min-width:0;flex:1;">
+          <p id="sbUserName" style="font-size:12px;font-weight:600;color:rgba(255,255,255,0.9);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Loading…</p>
+          <p id="sbUserEmail" style="font-size:10px;color:rgba(255,255,255,0.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></p>
         </div>
+        <i class="fas fa-right-from-bracket" title="Log out" onclick="sbLogout()" style="color:rgba(255,255,255,0.4);cursor:pointer;font-size:13px;padding:4px;"></i>
       </div>
     </div>
 
@@ -1187,147 +1213,151 @@ function getDocumentsHTML(): string {
 
 // ── PROFILE PAGE ─────────────────────────────────────────────
 function getProfileHTML(): string {
+  // Reusable field renderer: label + input/select/textarea bound to a column id
+  const F = (id: string, label: string, type = "text", placeholder = "") =>
+    `<div><label style="font-size:11px;color:#888;display:block;margin-bottom:4px;font-weight:500;">${label}</label>`+
+    (type === "textarea"
+      ? `<textarea id="f_${id}" rows="3" placeholder="${placeholder}" style="resize:vertical;"></textarea>`
+      : `<input id="f_${id}" type="${type}" placeholder="${placeholder}"/>`) + `</div>`;
+  const SEL = (id: string, label: string, opts: string[]) =>
+    `<div><label style="font-size:11px;color:#888;display:block;margin-bottom:4px;font-weight:500;">${label}</label>`+
+    `<select id="f_${id}">${opts.map(o=>`<option value="${o}">${o}</option>`).join("")}</select></div>`;
+
   const c = `
   <div class="page-header">
-    <div class="page-title">My Profile</div>
-    <div class="page-sub">Complete profile used by GETSCO for all document generation and scholarship matching</div>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div>
+        <div class="page-title">My Profile</div>
+        <div class="page-sub">Your information powers all scholarship matching and document generation</div>
+      </div>
+      <button class="btn-gold" onclick="saveProfile()" id="saveBtn"><i class="fas fa-floppy-disk"></i> Save Changes</button>
+    </div>
   </div>
+
   <div style="padding:0 36px 36px;display:grid;grid-template-columns:2fr 1fr;gap:18px;">
     <div style="display:flex;flex-direction:column;gap:16px;">
 
-      <!-- Personal Info -->
       <div class="card" style="padding:22px;">
         <p style="font-weight:700;font-size:15px;margin-bottom:16px;"><i class="fas fa-user" style="color:#c8a97e;margin-right:8px;"></i>Personal Information</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          ${[
-            ["Full Name","Syed Ashmam Ali Shah"],["Email","ashmamali2002@gmail.com"],
-            ["Phone","+92 347 1978085"],["Age","23 Years"],
-            ["Nationality","Pakistani"],["Country","Pakistan"],
-            ["Languages","Urdu (Native) · Pashto (Native) · English"],
-            ["Financial Status","Need-Based"],["Family","Father: Retired Government Officer"],
-          ].map(([k,v])=>`
-          <div style="background:#fafaf8;border-radius:9px;padding:11px 13px;border:1px solid #ede9e3;">
-            <p style="font-size:10px;color:#aaa;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;">${k}</p>
-            <p style="font-size:13px;font-weight:600;color:#1a1a2e;">${v}</p>
-          </div>`).join("")}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          ${F("full_name","Full Name")}
+          ${SEL("gender","Gender",["","Male","Female","Prefer not to say"])}
+          ${F("date_of_birth","Date of Birth","date")}
+          ${F("phone","Phone","text","+92 ...")}
+          ${F("nationality","Nationality")}
+          ${F("country_of_residence","Country of Residence")}
+          ${F("city","City")}
+          ${F("passport_number","Passport Number")}
+          ${F("passport_expiry","Passport Expiry","date")}
+          ${SEL("financial_status","Financial Status",["","Need-Based","Self-Funded","Partially Funded"])}
         </div>
-        <!-- Address full width -->
-        <div style="margin-top:10px;background:#fdf8f0;border:1px solid #e8d5a0;border-radius:9px;padding:11px 13px;display:flex;gap:10px;align-items:flex-start;">
-          <i class="fas fa-map-marker-alt" style="color:#c8a97e;margin-top:2px;"></i>
-          <div>
-            <p style="font-size:10px;color:#aaa;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;">Home Address</p>
-            <p style="font-size:13px;font-weight:600;color:#1a1a2e;">Back Street of PMS Boys 3, Ring Road, Peshawar, Pakistan</p>
-          </div>
-        </div>
-        <button onclick="profileTestEmail()" class="btn-gold" style="margin-top:14px;width:100%;justify-content:center;">
-          <i class="fas fa-envelope"></i> Send Test Email to ashmamali2002@gmail.com
-        </button>
-        <p id="emailResult" style="display:none;font-size:12px;text-align:center;margin-top:8px;"></p>
+        <div style="margin-top:12px;">${F("address","Home Address")}</div>
       </div>
 
-      <!-- Academic Records -->
       <div class="card" style="padding:22px;">
-        <p style="font-weight:700;font-size:15px;margin-bottom:14px;"><i class="fas fa-graduation-cap" style="color:#2d7a4f;margin-right:8px;"></i>Academic Records</p>
-        <div style="display:flex;flex-direction:column;gap:9px;">
-          ${[
-            ["Bachelor's Degree","University of Peshawar","Biotechnology","CGPA 2.75 / 4.0","2020–2024"],
-            ["Intermediate (F.Sc.)","Government College Peshawar","Pre-Medical","888 / 1100","2018–2020"],
-            ["Matriculation (SSC)","Shower Model School","Science","973 / 1100","2016–2018"],
-          ].map(([level,inst,field,marks,years])=>`
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#fafaf8;border-radius:9px;border:1px solid #ede9e3;">
-            <div><p style="font-size:13px;font-weight:600;color:#1a1a2e;">${level}</p><p style="font-size:11px;color:#888;margin-top:1px;">${inst} · ${field} · ${years}</p></div>
-            <span class="badge-green">${marks}</span>
-          </div>`).join("")}
+        <p style="font-weight:700;font-size:15px;margin-bottom:16px;"><i class="fas fa-graduation-cap" style="color:#2d7a4f;margin-right:8px;"></i>Academic Information</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          ${F("current_degree","Current / Highest Degree","text","e.g. BSc Biotechnology")}
+          ${F("university","University")}
+          ${F("cgpa","CGPA","number","e.g. 3.4")}
+          ${F("cgpa_scale","CGPA Scale","number","e.g. 4.0")}
+          ${F("graduation_year","Graduation Year","number","e.g. 2024")}
+          ${F("field_of_study","Field of Study")}
         </div>
+        <div style="margin-top:12px;">${F("thesis_title","Thesis Title (if any)")}</div>
+        <div style="margin-top:12px;">${F("research_interests","Research Interests","textarea","Comma-separated research areas you're interested in")}</div>
+        <div style="margin-top:12px;">${F("preferred_master_fields","Preferred Master's Fields","textarea","Fields you want to study at Master's level")}</div>
       </div>
 
-      <!-- Publications -->
       <div class="card" style="padding:22px;">
-        <p style="font-weight:700;font-size:15px;margin-bottom:14px;"><i class="fas fa-flask" style="color:#7c3aed;margin-right:8px;"></i>Research Publications <span class="badge-blue" style="margin-left:6px;">3 Papers</span></p>
-        <div style="display:flex;flex-direction:column;gap:9px;">
-          ${[
-            ["Comparative In Silico Analysis of Wild-Type and Mutant-Type Akt2 Gene Mutation (C.58C>T) in Type-2 Diabetes Mellitus","International Journal of Applied and Clinical Research (IJACR)","https://www.ijacr.com/index.php/home/article/view/21"],
-            ["Research Publication 2","International Journal of Applied and Clinical Research (IJACR)","https://www.ijacr.com/index.php/home/article/view/21"],
-            ["Research Publication 3","Frontiers in Biotechnology and Therapeutics Journal","https://fbtjournal.com/index.php/fbt/article/view/177"],
-          ].map(([title,journal,url])=>`
-          <div style="padding:12px 14px;background:#fafaf8;border-radius:9px;border:1px solid #ede9e3;">
-            <p style="font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:4px;">${title}</p>
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-              <p style="font-size:11px;color:#7c3aed;">${journal}</p>
-              <a href="${url}" target="_blank" style="font-size:11px;color:#c8a97e;text-decoration:none;"><i class="fas fa-external-link-alt"></i> View</a>
-            </div>
-          </div>`).join("")}
+        <p style="font-weight:700;font-size:15px;margin-bottom:16px;"><i class="fas fa-language" style="color:#2d5fa8;margin-right:8px;"></i>Language &amp; Standardised Tests</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+          ${F("ielts","IELTS Overall","text","e.g. 7.0")}
+          ${F("toefl","TOEFL Total","text","e.g. 95")}
+          ${F("gre","GRE Total","text","e.g. 320")}
         </div>
+        <p style="font-size:11px;color:#aaa;margin-top:8px;">Leave blank if not taken yet.</p>
       </div>
 
-      <!-- Career Goal -->
+      <div class="card" style="padding:22px;">
+        <p style="font-weight:700;font-size:15px;margin-bottom:16px;"><i class="fas fa-sliders" style="color:#a07030;margin-right:8px;"></i>Scholarship Preferences</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          ${SEL("funding_type","Funding Type",["Fully Funded","Partially Funded","Any"])}
+          ${SEL("degree_level","Degree Level",["Masters","PhD","Masters or PhD"])}
+        </div>
+        <div style="margin-top:12px;">${F("preferred_countries","Preferred Countries","textarea","e.g. Germany, Japan, Canada, USA")}</div>
+        <div style="margin-top:12px;">${F("research_areas","Target Research Areas","textarea","Research areas you want to pursue")}</div>
+      </div>
+
       <div class="card-warm" style="padding:22px;border-radius:14px;">
-        <p style="font-weight:700;font-size:15px;margin-bottom:12px;"><i class="fas fa-bullseye" style="color:#c8a97e;margin-right:8px;"></i>Career Goal</p>
-        <p style="font-size:13px;line-height:1.7;color:#444;">To become a biotechnology researcher dedicated to improving human health through meaningful scientific innovation and medical research. Coming from Pakistan, aspires to contribute to the discovery of affordable and effective solutions for diseases affecting millions — especially in underprivileged communities. Plans to bring advanced scientific knowledge and modern biotechnology practices back to Pakistan to contribute to scientific and healthcare development.</p>
+        <p style="font-weight:700;font-size:15px;margin-bottom:12px;"><i class="fas fa-bullseye" style="color:#c8a97e;margin-right:8px;"></i>Goals &amp; Background</p>
+        ${F("career_goal","Career Goal","textarea","What do you want to achieve in your career?")}
+        <div style="margin-top:12px;">${F("family_background","Family Background (optional)","textarea","Relevant context for need-based scholarships")}</div>
       </div>
     </div>
 
-    <!-- Right column -->
+    <!-- Right column: completion + account -->
     <div style="display:flex;flex-direction:column;gap:14px;">
-      <!-- AI Score -->
       <div style="background:linear-gradient(135deg,#1a1a2e,#2d2d4a);border-radius:14px;padding:22px;color:#fff;">
-        <p style="font-weight:600;font-size:14px;color:rgba(255,255,255,0.6);margin-bottom:8px;"><i class="fas fa-robot" style="color:#c8a97e;margin-right:6px;"></i>GETSCO Profile Score</p>
-        <div style="display:flex;align-items:flex-end;gap:6px;margin-bottom:4px;">
-          <span style="font-size:52px;font-weight:800;color:#fff;line-height:1;">87</span>
-          <span style="font-size:22px;color:#c8a97e;margin-bottom:6px;">/100</span>
+        <p style="font-weight:600;font-size:14px;color:rgba(255,255,255,0.6);margin-bottom:8px;"><i class="fas fa-circle-check" style="color:#c8a97e;margin-right:6px;"></i>Profile Completion</p>
+        <div style="display:flex;align-items:flex-end;gap:6px;margin-bottom:8px;">
+          <span id="complVal" style="font-size:52px;font-weight:800;color:#fff;line-height:1;">—</span>
+          <span style="font-size:22px;color:#c8a97e;margin-bottom:6px;">%</span>
         </div>
-        <p style="font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:16px;">Based on research output, academics & field alignment</p>
-        <div style="display:flex;flex-direction:column;gap:10px;">
-          ${[["Research Output","95","#4ade80"],["Academic Performance","65","#fbbf24"],["Field Relevance","95","#4ade80"],["Need-Based Fit","90","#4ade80"],["Country Coverage","88","#4ade80"]].map(([label,score,col])=>`
-          <div>
-            <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;"><span style="color:rgba(255,255,255,0.5);">${label}</span><span style="font-weight:700;color:${col};">${score}%</span></div>
-            <div style="height:3px;background:rgba(255,255,255,0.08);border-radius:2px;"><div style="height:3px;background:${col};border-radius:2px;width:${score}%;"></div></div>
-          </div>`).join("")}
-        </div>
+        <div style="height:5px;background:rgba(255,255,255,0.1);border-radius:3px;margin-bottom:10px;"><div id="complBar" style="height:5px;background:#c8a97e;border-radius:3px;width:0%;transition:width 0.4s;"></div></div>
+        <p style="font-size:11px;color:rgba(255,255,255,0.4);">A complete profile gives you better scholarship matches and stronger generated documents.</p>
       </div>
 
-      <!-- Target Countries -->
       <div class="card" style="padding:18px;">
-        <p style="font-weight:600;font-size:13px;margin-bottom:12px;"><i class="fas fa-globe" style="color:#c8a97e;margin-right:6px;"></i>Target Countries</p>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">
-          ${["🇺🇸 USA","🇨🇦 Canada","🇦🇺 Australia","🇩🇪 Germany","🇯🇵 Japan","🇰🇷 S. Korea","🇹🇼 Taiwan","🇨🇳 China","🇸🇪 Sweden","🇫🇷 France","🇸🇦 Saudi Arabia","🇦🇪 UAE","🇶🇦 Qatar","🇰🇼 Kuwait"]
-            .map(c=>`<span style="background:#fafaf8;border:1px solid #ede9e3;padding:4px 9px;border-radius:20px;font-size:11px;">${c}</span>`).join("")}
-        </div>
-      </div>
-
-      <!-- Requirements -->
-      <div class="card" style="padding:18px;">
-        <p style="font-weight:600;font-size:13px;margin-bottom:12px;"><i class="fas fa-check-circle" style="color:#2d7a4f;margin-right:6px;"></i>Scholarship Requirements</p>
-        <div style="display:flex;flex-direction:column;gap:7px;">
-          ${["Full Tuition Fee","Monthly Stipend","Accommodation","Health Insurance","Airfare","Research Support","Lab Facilities"]
-            .map(r=>`<div style="display:flex;align-items:center;gap:7px;"><i class="fas fa-check" style="color:#2d7a4f;font-size:11px;"></i><span style="font-size:12px;color:#444;">${r}</span></div>`).join("")}
-          <div style="margin-top:8px;background:#f0faf4;border:1px solid #b8e0c8;border-radius:8px;padding:8px 12px;text-align:center;">
-            <p style="font-size:12px;font-weight:700;color:#2d7a4f;">Fully Funded Only</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Top Fields -->
-      <div class="card" style="padding:18px;">
-        <p style="font-weight:600;font-size:13px;margin-bottom:12px;"><i class="fas fa-book" style="color:#7c3aed;margin-right:6px;"></i>Top Research Fields</p>
-        <div style="display:flex;flex-direction:column;gap:7px;">
-          ${["Biotechnology","Molecular Biology","Genetics","Microbiology","Immunology","Cancer Biology","Biomedical Sciences","Pharmacology"]
-            .map((f,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12px;color:#444;">${f}</span><span style="font-size:10px;font-weight:600;color:#7c3aed;background:#f5f0ff;border-radius:20px;padding:2px 7px;">#${i+1}</span></div>`).join("")}
-        </div>
+        <p style="font-weight:600;font-size:13px;margin-bottom:12px;"><i class="fas fa-circle-user" style="color:#c8a97e;margin-right:6px;"></i>Account</p>
+        <p style="font-size:11px;color:#aaa;">Email</p>
+        <p id="acctEmail" style="font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:14px;">—</p>
+        <button class="btn-outline btn-sm" style="width:100%;justify-content:center;color:#c0392b;border-color:#f0b8b8;" onclick="doLogout()"><i class="fas fa-right-from-bracket"></i> Log Out</button>
       </div>
     </div>
   </div>
 
   <script>
-    async function profileTestEmail(){
-      const res = document.getElementById('emailResult');
-      res.style.display='block'; res.style.color='#a07030'; res.textContent='Sending...';
+    const TEXT_FIELDS = ["full_name","gender","date_of_birth","nationality","country_of_residence","city","passport_number","passport_expiry","phone","address","current_degree","university","cgpa","cgpa_scale","graduation_year","field_of_study","thesis_title","research_interests","preferred_master_fields","preferred_countries","funding_type","degree_level","research_areas","career_goal","financial_status","family_background"];
+
+    function setVal(id,v){ const e=document.getElementById('f_'+id); if(e) e.value = (v===null||v===undefined)?'':v; }
+    function getVal(id){ const e=document.getElementById('f_'+id); return e?e.value.trim():''; }
+    function setCompletion(pct){ document.getElementById('complVal').textContent=pct||0; document.getElementById('complBar').style.width=(pct||0)+'%'; }
+
+    async function loadProfile(){
       try{
-        const r = await axios.post('/api/agent/test-email');
-        res.style.color = r.data.success ? '#2d7a4f' : '#c0392b';
-        res.textContent = r.data.success ? '✓ Test email sent! Check Gmail inbox (and Spam)' : '✗ Failed: '+(r.data.error||'');
-      }catch(e){res.style.color='#c0392b';res.textContent='✗ Error sending email';}
+        const r = await axios.get('/api/profile/me');
+        const p = r.data.profile||{};
+        TEXT_FIELDS.forEach(f=>setVal(f,p[f]));
+        // language tests jsonb -> ielts/toefl/gre
+        const lt = p.language_tests||{};
+        setVal('ielts', lt.ielts); setVal('toefl', lt.toefl); setVal('gre', lt.gre);
+        document.getElementById('acctEmail').textContent = r.data.email||'—';
+        setCompletion(r.data.completion);
+      }catch(e){ if(e.response?.status===401) window.location.href='/login'; }
     }
+
+    async function saveProfile(){
+      const btn=document.getElementById('saveBtn'); btn.disabled=true; btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Saving...';
+      const body={};
+      TEXT_FIELDS.forEach(f=>{ body[f]=getVal(f); });
+      body.language_tests = { ielts:getVal('ielts'), toefl:getVal('toefl'), gre:getVal('gre') };
+      // numeric coercion
+      ['cgpa','cgpa_scale','graduation_year'].forEach(n=>{ body[n]=body[n]?Number(body[n]):null; });
+      try{
+        const r = await axios.patch('/api/profile/me', body);
+        setCompletion(r.data.completion);
+        toast('Profile saved');
+      }catch(e){ toast(e.response?.data?.error||'Save failed','err'); }
+      btn.disabled=false; btn.innerHTML='<i class="fas fa-floppy-disk"></i> Save Changes';
+    }
+
+    async function doLogout(){
+      try{ await axios.post('/api/auth/logout'); }catch(e){}
+      window.location.href='/login';
+    }
+
+    loadProfile();
   </script>`;
   return getBaseLayout("Profile", "profile", c);
 }
