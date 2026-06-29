@@ -731,6 +731,26 @@ function getScholarshipsHTML(): string {
 
   <script>
     let schItems = [];
+    let userProfile = null;
+    async function ensureProfile(){
+      if(userProfile) return userProfile;
+      try{ const r=await axios.get('/api/profile/me'); userProfile=r.data.profile||{}; }catch(e){ userProfile={}; }
+      return userProfile;
+    }
+    // Per-user match: score a shared-pool scholarship against THIS user's profile.
+    function personalMatch(s, p){
+      if(!p || !Object.keys(p).length) return s.match_score||0;
+      let score = 35; // base relevance
+      const txt = ((s.title||'')+' '+(s.field||'')+' '+(s.description||'')+' '+(s.organization||'')+' '+(s.covers||'')+' '+(s.requirements||'')).toLowerCase();
+      const interests = ((p.research_interests||'')+' '+(p.field_of_study||'')+' '+(p.preferred_master_fields||'')+' '+(p.research_areas||'')).toLowerCase();
+      const words = Array.from(new Set(interests.split(/[^a-z]+/).filter(w=>w.length>4)));
+      const hits = words.filter(w=>txt.includes(w)).length;
+      score += Math.min(35, hits*9);
+      const pc = (p.preferred_countries||'').toLowerCase();
+      if(s.country && pc && pc.includes(s.country.toLowerCase().split(' ')[0])) score += 20;
+      if(s.is_fully_funded && (p.funding_type||'').toLowerCase().includes('full')) score += 10;
+      return Math.min(100, Math.round(score));
+    }
     async function loadList(){
       const ctry = document.getElementById('fCtry').value;
       const stat = document.getElementById('fStat').value;
@@ -741,8 +761,12 @@ function getScholarshipsHTML(): string {
       const box = document.getElementById('schList');
       box.innerHTML = loadingSkeleton(4);
       try{
+        const prof = await ensureProfile();
         const r = await axios.get(url);
         let list = r.data.scholarships||[];
+        // personalize: score each scholarship for THIS user, then sort best-first
+        list.forEach(s=>{ s.match_score = personalMatch(s, prof); });
+        list.sort((a,b)=>(b.match_score||0)-(a.match_score||0));
         // client-side quick filters
         if(quick==='new') list = list.filter(s=>isNewlyAdded(s));
         else if(quick==='high') list = list.filter(s=>(s.match_score||0)>=80);
