@@ -122,6 +122,63 @@ export async function runScholarshipSearch(
   return { found, skippedExpired, queriesRun: queries.length };
 }
 
+// ── SHARED POOL REFRESH ──────────────────────────────────────
+// Runs on a schedule (4x/day via external cron) to keep the shared
+// scholarship pool fresh: pulls new scholarships, removes expired ones,
+// and de-duplicates. Bounded per run so it stays within Worker limits;
+// running it several times a day keeps the pool comprehensive + current.
+export async function refreshPool(DB: D1Database): Promise<{
+  added: number; expired_removed: number; duplicates_removed: number; total: number;
+}> {
+  let added = 0, expiredRemoved = 0, dupesRemoved = 0;
+
+  // 1) Pull new scholarships from official sources
+  try {
+    const r = await runScholarshipSearch(DB, null);
+    added = r.found.length;
+  } catch { /* keep going even if a search batch fails */ }
+
+  // 2) Remove EXPIRED scholarships from the pool (past deadlines)
+  try {
+    const past = ["2024", "2025"];
+    for (const y of past) {
+      const res = await DB.prepare("DELETE FROM scholarships WHERE deadline LIKE ?").bind(`%${y}%`).run();
+      expiredRemoved += (res.meta as any)?.changes || 0;
+    }
+    // Remove deadlines in already-passed 2026 months (we are mid-2026)
+    const passed = ["January 2026", "February 2026", "March 2026", "April 2026", "May 2026"];
+    for (const m of passed) {
+      const res = await DB.prepare("DELETE FROM scholarships WHERE deadline LIKE ?").bind(`%${m}%`).run();
+      expiredRemoved += (res.meta as any)?.changes || 0;
+    }
+    // Drop anything explicitly flagged expired
+    const res = await DB.prepare("DELETE FROM scholarships WHERE is_expired = 1").run();
+    expiredRemoved += (res.meta as any)?.changes || 0;
+  } catch { /* ignore */ }
+
+  // 3) De-duplicate by URL (keep highest match_score)
+  try {
+    const dupes = await DB.prepare(
+      "SELECT url FROM scholarships WHERE url IS NOT NULL GROUP BY url HAVING COUNT(*) > 1"
+    ).all() as any;
+    for (const row of (dupes.results || [])) {
+      const extra = await DB.prepare(
+        "SELECT id FROM scholarships WHERE url = ? ORDER BY match_score DESC, id ASC LIMIT -1 OFFSET 1"
+      ).bind(row.url).all() as any;
+      for (const e of (extra.results || [])) {
+        await DB.prepare("DELETE FROM scholarships WHERE id = ?").bind(e.id).run();
+        dupesRemoved++;
+      }
+    }
+  } catch { /* ignore */ }
+
+  const total = await DB.prepare(
+    "SELECT COUNT(*) as c FROM scholarships WHERE (is_expired = 0 OR is_expired IS NULL)"
+  ).first() as any;
+
+  return { added, expired_removed: expiredRemoved, duplicates_removed: dupesRemoved, total: total?.c || 0 };
+}
+
 // ── Get all scholarships from DB ─────────────────────────────
 scholarships.get("/", async (c) => {
   try {
@@ -428,6 +485,28 @@ scholarships.post("/verify-all", async (c) => {
       links_checked: list.length,
       links_confirmed: linksConfirmed,
       verified_count: verifiedCount,
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ── Scheduled pool refresh endpoint (called by external cron) ─
+// Protected by REFRESH_SECRET so only the scheduler (or you) can run it.
+// If no secret is configured (local dev) it's open for easy testing.
+scholarships.post("/refresh-pool", async (c) => {
+  const secret = (globalThis as any).REFRESH_SECRET || "";
+  if (secret) {
+    const provided = c.req.header("x-refresh-token") || c.req.query("token") || "";
+    if (provided !== secret) return c.json({ success: false, error: "Unauthorized" }, 401);
+  }
+  try {
+    const r = await refreshPool(c.env.DB);
+    return c.json({
+      success: true,
+      message: `Pool refreshed: +${r.added} new, −${r.expired_removed} expired, −${r.duplicates_removed} duplicates. ${r.total} active scholarships.`,
+      ...r,
+      refreshed_at: new Date().toISOString(),
     });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);

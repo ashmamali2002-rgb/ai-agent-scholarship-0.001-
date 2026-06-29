@@ -1,0 +1,30 @@
+name: Refresh Scholarship Pool
+
+# Refreshes the shared scholarship pool 4x/day.
+# Times are in UTC. Pakistan (PKT) is UTC+5, so:
+#   22:00 UTC = 03:00 PKT
+#   04:00 UTC = 09:00 PKT
+#   09:00 UTC = 14:00 PKT (2 PM)
+#   15:00 UTC = 20:00 PKT (8 PM)
+on:
+  schedule:
+    - cron: "0 22 * * *"   # 3 AM PKT
+    - cron: "0 4 * * *"    # 9 AM PKT
+    - cron: "0 9 * * *"    # 2 PM PKT
+    - cron: "0 15 * * *"   # 8 PM PKT
+  workflow_dispatch:        # allows a manual "Run workflow" button in GitHub
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger pool refresh
+        run: |
+          echo "Refreshing scholarship pool..."
+          code=$(curl -s -o /tmp/out.json -w "%{http_code}" -X POST \
+            "${{ secrets.GETSCO_URL }}/api/scholarships/refresh-pool" \
+            -H "x-refresh-token: ${{ secrets.REFRESH_SECRET }}" \
+            --max-time 120)
+          echo "HTTP $code"
+          cat /tmp/out.json
+          if [ "$code" -ge 400 ]; then echo "Refresh failed"; exit 1; fi

@@ -21,6 +21,7 @@ type Bindings = {
   SUPABASE_URL?: string;
   SUPABASE_ANON_KEY?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
+  REFRESH_SECRET?: string;
 };
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -36,6 +37,7 @@ app.use("*", async (c, next) => {
   if (c.env.SUPABASE_URL)              (globalThis as any).SUPABASE_URL              = c.env.SUPABASE_URL;
   if (c.env.SUPABASE_ANON_KEY)         (globalThis as any).SUPABASE_ANON_KEY         = c.env.SUPABASE_ANON_KEY;
   if (c.env.SUPABASE_SERVICE_ROLE_KEY) (globalThis as any).SUPABASE_SERVICE_ROLE_KEY = c.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (c.env.REFRESH_SECRET)            (globalThis as any).REFRESH_SECRET            = c.env.REFRESH_SECRET;
   await next();
 });
 
@@ -1426,7 +1428,10 @@ function getDataExtractHTML(): string {
     <div class="card" style="padding:18px 20px;margin-bottom:20px;border-left:3px solid #2d7a4f;">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
         <p style="font-weight:600;font-size:14px;"><i class="fas fa-shield-halved" style="color:#2d7a4f;margin-right:7px;"></i>Data Quality &amp; Verification</p>
-        <button class="btn-outline btn-sm" onclick="runVerify()"><i class="fas fa-circle-check"></i> Run Verification</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-gold btn-sm" onclick="runRefresh()"><i class="fas fa-arrows-rotate"></i> Refresh Pool Now</button>
+          <button class="btn-outline btn-sm" onclick="runVerify()"><i class="fas fa-circle-check"></i> Run Verification</button>
+        </div>
       </div>
       <div id="qualityGrid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;">
         <p style="grid-column:1/-1;color:#aaa;font-size:13px;">Loading quality metrics…</p>
@@ -2042,6 +2047,14 @@ function getDataExtractHTML(): string {
         toast(r.data.message);
         loadQuality(); loadAll();
       }catch(e){ toast('Verification failed','err'); }
+    }
+    async function runRefresh(){
+      toast('Refreshing scholarship pool — this can take a minute…');
+      try{
+        const r = await axios.post('/api/scholarships/refresh-pool');
+        toast(r.data.message);
+        loadQuality(); loadAll();
+      }catch(e){ toast('Refresh failed','err'); }
     }
 
     // ── Init ─────────────────────────────────────────────────

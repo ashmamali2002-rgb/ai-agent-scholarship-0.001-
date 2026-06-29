@@ -16,3 +16,7 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your_supabase_anon_key_here
 # Legacy service_role key (secret) — only needed for admin/background tasks
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
+
+# Secret that protects the scheduled pool-refresh endpoint.
+# Use any long random string; set the SAME value as a GitHub Actions secret.
+REFRESH_SECRET=your_long_random_refresh_secret_here
