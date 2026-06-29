@@ -7,6 +7,7 @@ import documentRoutes from "./routes/documents";
 import applicationRoutes from "./routes/applications";
 import agentRoutes from "./routes/agent";
 import professorRoutes from "./routes/professors";
+import authRoutes from "./routes/auth";
 
 type Bindings = {
   DB: D1Database;
@@ -15,6 +16,9 @@ type Bindings = {
   JINA_API_KEY?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
+  SUPABASE_URL?: string;
+  SUPABASE_ANON_KEY?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
 };
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -27,6 +31,9 @@ app.use("*", async (c, next) => {
   if (c.env.JINA_API_KEY)   (globalThis as any).JINA_API_KEY   = c.env.JINA_API_KEY;
   if (c.env.RESEND_API_KEY) (globalThis as any).RESEND_API_KEY = c.env.RESEND_API_KEY;
   if (c.env.RESEND_FROM)    (globalThis as any).RESEND_FROM    = c.env.RESEND_FROM;
+  if (c.env.SUPABASE_URL)              (globalThis as any).SUPABASE_URL              = c.env.SUPABASE_URL;
+  if (c.env.SUPABASE_ANON_KEY)         (globalThis as any).SUPABASE_ANON_KEY         = c.env.SUPABASE_ANON_KEY;
+  if (c.env.SUPABASE_SERVICE_ROLE_KEY) (globalThis as any).SUPABASE_SERVICE_ROLE_KEY = c.env.SUPABASE_SERVICE_ROLE_KEY;
   await next();
 });
 
@@ -39,6 +46,7 @@ app.route("/api/documents", documentRoutes);
 app.route("/api/applications", applicationRoutes);
 app.route("/api/agent", agentRoutes);
 app.route("/api/professors", professorRoutes);
+app.route("/api/auth", authRoutes);
 
 app.get("/api/health", (c) => c.json({ status: "ok", agent: "GETSCO", version: "2.0.0" }));
 
@@ -49,6 +57,8 @@ app.get("/documents", async (c) => c.html(getDocumentsHTML()));
 app.get("/profile", async (c) => c.html(getProfileHTML()));
 app.get("/professors", async (c) => c.html(getProfessorsHTML()));
 app.get("/data", async (c) => c.html(getDataExtractHTML()));
+app.get("/login", (c) => c.html(getAuthHTML("login")));
+app.get("/signup", (c) => c.html(getAuthHTML("signup")));
 
 // ── SHARED BASE LAYOUT ───────────────────────────────────────
 function getBaseLayout(title: string, activeNav: string, content: string): string {
@@ -1968,6 +1978,107 @@ function getDataExtractHTML(): string {
     loadQuality();
   </script>`;
   return getBaseLayout("Data Preview", "data", c);
+}
+
+// ── AUTH PAGE (login / signup) ───────────────────────────────
+function getAuthHTML(mode: "login" | "signup"): string {
+  const isSignup = mode === "signup";
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>${isSignup ? "Sign Up" : "Login"} — GETSCO</title>
+<script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet"/>
+<style>
+  *{font-family:'Inter',sans-serif;box-sizing:border-box;margin:0;padding:0;}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a1a2e,#2d2d4a);padding:20px;}
+  .auth-card{background:#fff;border-radius:18px;width:100%;max-width:420px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;}
+  .auth-head{background:linear-gradient(135deg,#c8a97e,#a07850);padding:28px 32px;text-align:center;color:#fff;}
+  .auth-head .logo{width:48px;height:48px;background:rgba(255,255,255,0.2);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;margin-bottom:10px;}
+  .auth-head h1{font-family:'Playfair Display',serif;font-size:24px;}
+  .auth-head p{font-size:12px;opacity:0.85;margin-top:2px;letter-spacing:1px;text-transform:uppercase;}
+  .tabs{display:flex;border-bottom:1px solid #eee;}
+  .tab{flex:1;text-align:center;padding:15px;font-size:14px;font-weight:600;color:#999;cursor:pointer;text-decoration:none;border-bottom:2px solid transparent;}
+  .tab.active{color:#1a1a2e;border-bottom-color:#c8a97e;}
+  .auth-body{padding:28px 32px;}
+  label{display:block;font-size:12px;color:#888;margin-bottom:5px;margin-top:14px;font-weight:500;}
+  input{width:100%;border:1px solid #ddd8d0;border-radius:9px;padding:11px 14px;font-size:14px;outline:none;transition:border 0.15s;}
+  input:focus{border-color:#c8a97e;}
+  .btn{width:100%;background:#1a1a2e;color:#fff;border:none;padding:13px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;margin-top:20px;transition:all 0.18s;}
+  .btn:hover{background:#2d2d4a;}
+  .btn:disabled{opacity:0.6;cursor:not-allowed;}
+  .row{display:flex;align-items:center;justify-content:space-between;margin-top:14px;font-size:13px;}
+  .row label{margin:0;display:flex;align-items:center;gap:6px;color:#666;}
+  .row input{width:auto;}
+  .link{color:#a07030;text-decoration:none;font-size:13px;cursor:pointer;}
+  .msg{margin-top:14px;padding:11px 14px;border-radius:9px;font-size:13px;display:none;}
+  .msg.err{background:#fff5f5;color:#c0392b;border:1px solid #f0b8b8;display:block;}
+  .msg.ok{background:#f0faf4;color:#2d7a4f;border:1px solid #b8e0c8;display:block;}
+  .foot{text-align:center;padding:16px;font-size:11px;color:#bbb;border-top:1px solid #f0ede8;}
+</style></head>
+<body>
+  <div class="auth-card">
+    <div class="auth-head">
+      <div class="logo">G</div>
+      <h1>GETSCO</h1>
+      <p>Scholarship Intelligence</p>
+    </div>
+    <div class="tabs">
+      <a href="/login" class="tab ${!isSignup ? "active" : ""}">Login</a>
+      <a href="/signup" class="tab ${isSignup ? "active" : ""}">Sign Up</a>
+    </div>
+    <div class="auth-body">
+      <div id="msg" class="msg"></div>
+      ${isSignup ? `
+      <label>Full Name</label>
+      <input id="fullName" placeholder="Your full name" autocomplete="name"/>
+      ` : ""}
+      <label>Email</label>
+      <input id="email" type="email" placeholder="you@example.com" autocomplete="email"/>
+      <label>Password</label>
+      <input id="password" type="password" placeholder="${isSignup ? "At least 6 characters" : "Your password"}" autocomplete="${isSignup ? "new-password" : "current-password"}"/>
+      ${!isSignup ? `
+      <div class="row">
+        <label><input type="checkbox" id="remember" checked/> Remember me</label>
+        <span class="link" onclick="forgotPw()">Forgot password?</span>
+      </div>` : ""}
+      <button class="btn" id="submitBtn" onclick="submitAuth()">${isSignup ? "Create Account" : "Log In"}</button>
+    </div>
+    <div class="foot">Powered by GETSCO · AI Scholarship Intelligence</div>
+  </div>
+  <script>
+    const isSignup = ${isSignup};
+    function showMsg(text, type){ const m=document.getElementById('msg'); m.textContent=text; m.className='msg '+type; }
+    function val(id){ const e=document.getElementById(id); return e?e.value.trim():''; }
+    document.querySelectorAll('input').forEach(i=>i.addEventListener('keypress',e=>{if(e.key==='Enter')submitAuth();}));
+
+    async function submitAuth(){
+      const email=val('email'), password=val('password');
+      if(!email||!password){ showMsg('Please enter your email and password.','err'); return; }
+      const btn=document.getElementById('submitBtn'); btn.disabled=true; btn.textContent='Please wait…';
+      try{
+        if(isSignup){
+          const r=await axios.post('/api/auth/signup',{email,password,full_name:val('fullName')});
+          if(r.data.verified){ window.location.href='/'; }
+          else { showMsg(r.data.message,'ok'); btn.textContent='Created — check your email'; }
+        } else {
+          await axios.post('/api/auth/login',{email,password,remember:document.getElementById('remember').checked});
+          window.location.href='/';
+        }
+      }catch(e){
+        showMsg(e.response?.data?.error||'Something went wrong. Try again.','err');
+        btn.disabled=false; btn.textContent=isSignup?'Create Account':'Log In';
+      }
+    }
+    async function forgotPw(){
+      const email=val('email');
+      if(!email){ showMsg('Enter your email above first, then click Forgot password.','err'); return; }
+      try{ const r=await axios.post('/api/auth/reset',{email}); showMsg(r.data.message,'ok'); }
+      catch(e){ showMsg('Could not send reset email.','err'); }
+    }
+  </script>
+</body></html>`;
 }
 
 export default app;
