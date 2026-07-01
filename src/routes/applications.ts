@@ -1,10 +1,24 @@
 import { Hono } from "hono";
 import { generateCoverLetter, generatePersonalStatement } from "../lib/ai";
 import { sendApplicationEmail, sendNotificationToUser } from "../lib/email";
-import { USER_PROFILE } from "../lib/profile";
+import { normalizeProfile } from "../lib/profile";
+import { currentUser } from "./auth";
+import { supaRest } from "../lib/supabase";
 
 type Bindings = { DB: D1Database };
 const applications = new Hono<{ Bindings: Bindings }>();
+
+// Build the logged-in user's profile for document generation.
+async function genProfile(sess: any): Promise<any> {
+  const [prof, pubs, acad] = await Promise.all([
+    supaRest("profiles", { accessToken: sess.accessToken, query: "select=*" }).catch(() => []),
+    supaRest("publications", { accessToken: sess.accessToken, query: "select=*" }).catch(() => []),
+    supaRest("academic_records", { accessToken: sess.accessToken, query: "select=*" }).catch(() => []),
+  ]);
+  const row: any = (prof && prof[0]) || {};
+  row.email = sess.user.email;
+  return normalizeProfile(row, pubs || [], acad || []);
+}
 
 // Get all applications
 applications.get("/", async (c) => {
@@ -78,6 +92,8 @@ applications.put("/:id/status", async (c) => {
 // Send application via email
 applications.post("/:id/send-email", async (c) => {
   try {
+    const sess = await currentUser(c);
+    if (!sess) return c.json({ success: false, authenticated: false }, 401);
     const appId = c.req.param("id");
     const { recipient_email } = await c.req.json();
 
@@ -91,10 +107,11 @@ applications.post("/:id/send-email", async (c) => {
 
     if (!app) return c.json({ success: false, error: "Application not found" }, 404);
 
-    // Generate fresh documents
+    // Generate fresh documents from THIS user's profile
+    const profile = await genProfile(sess);
     const [coverLetter, personalStatement] = await Promise.all([
-      generateCoverLetter(app.scholarship_title, app.organization, app.country, USER_PROFILE),
-      generatePersonalStatement(app.scholarship_title, app.organization, app.country, app.field || "Biotechnology", USER_PROFILE),
+      generateCoverLetter(app.scholarship_title, app.organization, app.country, profile),
+      generatePersonalStatement(app.scholarship_title, app.organization, app.country, app.field || profile.fieldOfStudy || "your field", profile),
     ]);
 
     const targetEmail = recipient_email || "scholarshipcommittee@example.com";
@@ -104,7 +121,7 @@ applications.post("/:id/send-email", async (c) => {
       app.organization,
       coverLetter,
       personalStatement,
-      USER_PROFILE.personal.fullName,
+      profile.fullName || sess.user.email,
     );
 
     if (sent) {

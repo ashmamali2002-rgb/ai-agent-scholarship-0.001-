@@ -1,258 +1,208 @@
 import { Hono } from "hono";
 import { generateResume, generatePersonalStatement, generateCoverLetter, generateResearchProposal } from "../lib/ai";
-import { USER_PROFILE } from "../lib/profile";
+import { normalizeProfile } from "../lib/profile";
 import { verifyDocumentReferences, logVerification } from "../lib/verify";
+import { currentUser } from "./auth";
+import { supaRest } from "../lib/supabase";
 
 type Bindings = { DB: D1Database };
 const documents = new Hono<{ Bindings: Bindings }>();
 
-// Get all documents
-documents.get("", async (c) => {
-  return c.redirect("/api/documents/list");
-});
+// Build the logged-in user's document-generation profile from Supabase.
+async function getGenProfile(sess: any): Promise<any> {
+  const [prof, pubs, acad] = await Promise.all([
+    supaRest("profiles", { accessToken: sess.accessToken, query: "select=*" }).catch(() => []),
+    supaRest("publications", { accessToken: sess.accessToken, query: "select=*&order=year.desc.nullslast" }).catch(() => []),
+    supaRest("academic_records", { accessToken: sess.accessToken, query: "select=*" }).catch(() => []),
+  ]);
+  const row: any = (prof && prof[0]) || {};
+  row.email = sess.user.email;
+  return normalizeProfile(row, pubs || [], acad || []);
+}
+
+// Save a generated document to the user's Supabase documents table (RLS-scoped).
+async function saveDoc(sess: any, d: { type: string; title: string; content: string; refsTotal?: number; refsVerified?: number }) {
+  const res = await supaRest("documents", {
+    method: "POST",
+    accessToken: sess.accessToken,
+    body: {
+      user_id: sess.user.id, type: d.type, title: d.title, content: d.content,
+      references_total: d.refsTotal || 0, references_verified: d.refsVerified || 0,
+    },
+    prefer: "return=representation",
+  });
+  return (res && res[0]) || null;
+}
+
+// Look up scholarship context from the shared D1 pool (for title/org/field).
+async function scholarshipCtx(DB: D1Database, scholarshipId: any) {
+  if (!scholarshipId) return null;
+  try { return await DB.prepare("SELECT * FROM scholarships WHERE id = ?").bind(scholarshipId).first() as any; }
+  catch { return null; }
+}
+
+// ── List the user's documents ────────────────────────────────
+documents.get("", async (c) => c.redirect("/api/documents/list"));
 documents.get("/list", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const { type, scholarship_id } = c.req.query();
-    let query = "SELECT id, user_id, application_id, scholarship_id, type, title, version, created_at FROM documents WHERE user_id = 1";
-    const params: any[] = [];
-
-    if (type) { query += " AND type = ?"; params.push(type); }
-    if (scholarship_id) { query += " AND scholarship_id = ?"; params.push(scholarship_id); }
-    query += " ORDER BY created_at DESC";
-
-    const results = await c.env.DB.prepare(query).bind(...params).all();
-    return c.json({ success: true, documents: results.results });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
+    const { type } = c.req.query();
+    let q = "select=id,type,title,references_total,references_verified,created_at&order=created_at.desc";
+    if (type) q += `&type=eq.${encodeURIComponent(type)}`;
+    const rows = await supaRest("documents", { accessToken: sess.accessToken, query: q });
+    return c.json({ success: true, documents: rows || [] });
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
   }
 });
 
-// Readiness: which of the 4 core documents exist, what's missing, and a score
-// NOTE: must be registered BEFORE "/:id" or Hono matches "readiness" as an id.
+// ── Readiness (before /:id) ──────────────────────────────────
 documents.get("/readiness", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const { scholarship_id } = c.req.query();
     const REQUIRED = [
       { type: "resume", label: "Academic CV / Resume" },
       { type: "cover_letter", label: "Cover Letter" },
       { type: "personal_statement", label: "Personal Statement" },
       { type: "research_proposal", label: "Research Proposal" },
     ];
-
-    let query = "SELECT DISTINCT type FROM documents WHERE user_id = 1";
-    const params: any[] = [];
-    if (scholarship_id) { query += " AND scholarship_id = ?"; params.push(scholarship_id); }
-
-    const rows = await c.env.DB.prepare(query).bind(...params).all();
-    const present = new Set((rows.results as any[]).map(r => r.type));
-
+    const rows = await supaRest("documents", { accessToken: sess.accessToken, query: "select=type" });
+    const present = new Set((rows || []).map((r: any) => r.type));
     const generated = REQUIRED.filter(d => present.has(d.type));
     const missing = REQUIRED.filter(d => !present.has(d.type));
-    const readiness = Math.round((generated.length / REQUIRED.length) * 100);
-
     return c.json({
-      success: true,
-      required: REQUIRED,
-      generated,
-      missing,
-      readiness_score: readiness,
-      scholarship_id: scholarship_id || null,
+      success: true, required: REQUIRED, generated, missing,
+      readiness_score: Math.round((generated.length / REQUIRED.length) * 100),
     });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
   }
 });
 
-// Get document content
+// ── Get one document ─────────────────────────────────────────
 documents.get("/:id", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const id = c.req.param("id");
-    const doc = await c.env.DB.prepare("SELECT * FROM documents WHERE id = ? AND user_id = 1").bind(id).first();
+    const rows = await supaRest("documents", { accessToken: sess.accessToken, query: `id=eq.${c.req.param("id")}&select=*` });
+    const doc = rows && rows[0];
     if (!doc) return c.json({ success: false, error: "Document not found" }, 404);
     return c.json({ success: true, document: doc });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
   }
 });
 
-// Generate resume for a scholarship
+// ── Generators ───────────────────────────────────────────────
 documents.post("/generate/resume", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const { scholarship_id, scholarship_title, scholarship_field } = await c.req.json();
-
-    const title = scholarship_title || "General Scholarship";
-    const field = scholarship_field || "Biotechnology";
-
-    const content = await generateResume(title, field, USER_PROFILE);
-
-    const result = await c.env.DB.prepare(`
-      INSERT INTO documents (user_id, scholarship_id, type, title, content) 
-      VALUES (1, ?, 'resume', ?, ?)
-    `).bind(scholarship_id || null, `Resume for ${title}`, content).run();
-
-    return c.json({
-      success: true,
-      document_id: result.meta.last_row_id,
-      type: "resume",
-      title: `Resume for ${title}`,
-      content,
-    });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
+    const { scholarship_id, scholarship_title, field } = await c.req.json().catch(() => ({}));
+    const sch = await scholarshipCtx(c.env.DB, scholarship_id);
+    const title = scholarship_title || sch?.title || "Scholarship";
+    const fld = field || sch?.field || "your field";
+    const profile = await getGenProfile(sess);
+    const content = await generateResume(title, fld, profile);
+    const doc = await saveDoc(sess, { type: "resume", title: `Resume for ${title}`, content });
+    return c.json({ success: true, document_id: doc?.id, type: "resume", title: doc?.title, content });
+  } catch (e: any) { return c.json({ success: false, error: e.message }, 500); }
 });
 
-// Generate personal statement
 documents.post("/generate/personal-statement", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const { scholarship_id, scholarship_title, organization, country, field } = await c.req.json();
-
-    const title = scholarship_title || "General Scholarship";
-    const org = organization || "Scholarship Committee";
-    const ctry = country || "International";
-    const fld = field || "Biotechnology";
-
-    const content = await generatePersonalStatement(title, org, ctry, fld, USER_PROFILE);
-
-    const result = await c.env.DB.prepare(`
-      INSERT INTO documents (user_id, scholarship_id, type, title, content) 
-      VALUES (1, ?, 'personal_statement', ?, ?)
-    `).bind(scholarship_id || null, `Personal Statement for ${title}`, content).run();
-
-    return c.json({
-      success: true,
-      document_id: result.meta.last_row_id,
-      type: "personal_statement",
-      title: `Personal Statement for ${title}`,
-      content,
-    });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
+    const { scholarship_id, scholarship_title, organization, country, field } = await c.req.json().catch(() => ({}));
+    const sch = await scholarshipCtx(c.env.DB, scholarship_id);
+    const title = scholarship_title || sch?.title || "Scholarship";
+    const org = organization || sch?.organization || "Scholarship Committee";
+    const ctry = country || sch?.country || "International";
+    const fld = field || sch?.field || "your field";
+    const profile = await getGenProfile(sess);
+    const content = await generatePersonalStatement(title, org, ctry, fld, profile);
+    const doc = await saveDoc(sess, { type: "personal_statement", title: `Personal Statement for ${title}`, content });
+    return c.json({ success: true, document_id: doc?.id, type: "personal_statement", title: doc?.title, content });
+  } catch (e: any) { return c.json({ success: false, error: e.message }, 500); }
 });
 
-// Generate cover letter
 documents.post("/generate/cover-letter", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const { scholarship_id, scholarship_title, organization, country } = await c.req.json();
-
-    const title = scholarship_title || "General Scholarship";
-    const org = organization || "Scholarship Committee";
-    const ctry = country || "International";
-
-    const content = await generateCoverLetter(title, org, ctry, USER_PROFILE);
-
-    const result = await c.env.DB.prepare(`
-      INSERT INTO documents (user_id, scholarship_id, type, title, content) 
-      VALUES (1, ?, 'cover_letter', ?, ?)
-    `).bind(scholarship_id || null, `Cover Letter for ${title}`, content).run();
-
-    return c.json({
-      success: true,
-      document_id: result.meta.last_row_id,
-      type: "cover_letter",
-      title: `Cover Letter for ${title}`,
-      content,
-    });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
+    const { scholarship_id, scholarship_title, organization, country } = await c.req.json().catch(() => ({}));
+    const sch = await scholarshipCtx(c.env.DB, scholarship_id);
+    const title = scholarship_title || sch?.title || "Scholarship";
+    const org = organization || sch?.organization || "Scholarship Committee";
+    const ctry = country || sch?.country || "International";
+    const profile = await getGenProfile(sess);
+    const content = await generateCoverLetter(title, org, ctry, profile);
+    const doc = await saveDoc(sess, { type: "cover_letter", title: `Cover Letter for ${title}`, content });
+    return c.json({ success: true, document_id: doc?.id, type: "cover_letter", title: doc?.title, content });
+  } catch (e: any) { return c.json({ success: false, error: e.message }, 500); }
 });
 
-// Generate research proposal
 documents.post("/generate/research-proposal", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const { scholarship_id, scholarship_title, field } = await c.req.json();
-
-    const title = scholarship_title || "Research Scholarship";
-    const fld = field || "Biotechnology";
-
-    const raw = await generateResearchProposal(title, fld, USER_PROFILE);
-    // Verify every citation against Crossref; unverifiable ones are flagged.
+    const { scholarship_id, scholarship_title, field } = await c.req.json().catch(() => ({}));
+    const sch = await scholarshipCtx(c.env.DB, scholarship_id);
+    const title = scholarship_title || sch?.title || "Research Scholarship";
+    const fld = field || sch?.field || "your field";
+    const profile = await getGenProfile(sess);
+    const raw = await generateResearchProposal(title, fld, profile);
     const ver = await verifyDocumentReferences(raw);
-    const content = ver.content;
     await logVerification(c.env.DB, "reference", `Research Proposal for ${title}`, "crossref", ver.unverified ? "fail" : "pass", `${ver.verified}/${ver.total} verified`);
-
-    const result = await c.env.DB.prepare(`
-      INSERT INTO documents (user_id, scholarship_id, type, title, content, references_total, references_verified)
-      VALUES (1, ?, 'research_proposal', ?, ?, ?, ?)
-    `).bind(scholarship_id || null, `Research Proposal for ${title}`, content, ver.total, ver.verified).run();
-
-    return c.json({
-      success: true,
-      document_id: result.meta.last_row_id,
-      type: "research_proposal",
-      title: `Research Proposal for ${title}`,
-      content,
-      references: { total: ver.total, verified: ver.verified, unverified: ver.unverified },
-    });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
+    const doc = await saveDoc(sess, { type: "research_proposal", title: `Research Proposal for ${title}`, content: ver.content, refsTotal: ver.total, refsVerified: ver.verified });
+    return c.json({ success: true, document_id: doc?.id, type: "research_proposal", title: doc?.title, content: ver.content, references: ver });
+  } catch (e: any) { return c.json({ success: false, error: e.message }, 500); }
 });
 
-// Generate ALL documents for a scholarship at once
+// ── Generate all 4 at once ───────────────────────────────────
 documents.post("/generate/all", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const { scholarship_id } = await c.req.json();
+    const { scholarship_id } = await c.req.json().catch(() => ({}));
+    const sch = await scholarshipCtx(c.env.DB, scholarship_id);
+    const title = sch?.title || "Scholarship Application";
+    const org = sch?.organization || "Scholarship Committee";
+    const country = sch?.country || "International";
+    const field = sch?.field || "your field";
+    const profile = await getGenProfile(sess);
 
-    // Get scholarship details
-    let scholarship: any = null;
-    if (scholarship_id) {
-      scholarship = await c.env.DB.prepare("SELECT * FROM scholarships WHERE id = ?").bind(scholarship_id).first();
-    }
-
-    const title = scholarship?.title || "Scholarship Application";
-    const org = scholarship?.organization || "Scholarship Committee";
-    const country = scholarship?.country || "International";
-    const field = scholarship?.field || "Biotechnology";
-
-    const [resume, personalStatement, coverLetter, researchProposalRaw] = await Promise.all([
-      generateResume(title, field, USER_PROFILE),
-      generatePersonalStatement(title, org, country, field, USER_PROFILE),
-      generateCoverLetter(title, org, country, USER_PROFILE),
-      generateResearchProposal(title, field, USER_PROFILE),
+    const [resume, personalStatement, coverLetter, researchRaw] = await Promise.all([
+      generateResume(title, field, profile),
+      generatePersonalStatement(title, org, country, field, profile),
+      generateCoverLetter(title, org, country, profile),
+      generateResearchProposal(title, field, profile),
     ]);
-
-    // Verify the research proposal's references against Crossref
-    const ver = await verifyDocumentReferences(researchProposalRaw);
+    const ver = await verifyDocumentReferences(researchRaw);
     await logVerification(c.env.DB, "reference", `Research Proposal for ${title}`, "crossref", ver.unverified ? "fail" : "pass", `${ver.verified}/${ver.total} verified`);
 
     const docs = [
       { type: "resume", title: `Resume for ${title}`, content: resume },
       { type: "personal_statement", title: `Personal Statement for ${title}`, content: personalStatement },
       { type: "cover_letter", title: `Cover Letter for ${title}`, content: coverLetter },
-      { type: "research_proposal", title: `Research Proposal for ${title}`, content: ver.content },
+      { type: "research_proposal", title: `Research Proposal for ${title}`, content: ver.content, refsTotal: ver.total, refsVerified: ver.verified },
     ];
-
-    const ids: number[] = [];
-    for (const doc of docs) {
-      const result = await c.env.DB.prepare(`
-        INSERT INTO documents (user_id, scholarship_id, type, title, content) 
-        VALUES (1, ?, ?, ?, ?)
-      `).bind(scholarship_id || null, doc.type, doc.title, doc.content).run();
-      ids.push(result.meta.last_row_id as number);
-    }
-
-    return c.json({
-      success: true,
-      message: "All 4 documents generated successfully",
-      document_ids: ids,
-      documents: docs.map((d, i) => ({ id: ids[i], type: d.type, title: d.title })),
-    });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
+    for (const d of docs) await saveDoc(sess, d);
+    return c.json({ success: true, message: "All 4 documents generated for your profile", documents: docs.map(d => ({ type: d.type, title: d.title })) });
+  } catch (e: any) { return c.json({ success: false, error: e.message }, 500); }
 });
 
-// Delete document
+// ── Delete a document ────────────────────────────────────────
 documents.delete("/:id", async (c) => {
+  const sess = await currentUser(c);
+  if (!sess) return c.json({ success: false, authenticated: false }, 401);
   try {
-    const id = c.req.param("id");
-    await c.env.DB.prepare("DELETE FROM documents WHERE id = ? AND user_id = 1").bind(id).run();
+    await supaRest("documents", { method: "DELETE", accessToken: sess.accessToken, query: `id=eq.${c.req.param("id")}` });
     return c.json({ success: true, message: "Document deleted" });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
+  } catch (e: any) {
+    return c.json({ success: false, error: e.message }, 500);
   }
 });
 

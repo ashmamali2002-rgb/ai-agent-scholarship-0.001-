@@ -55,9 +55,51 @@ export async function callAI(messages: AIMessage[], maxTokens: number = 4000): P
   }
 }
 
+// ── Build a real-facts block from ANY user's normalized profile ──
+// Documents are generated from these facts only. Empty fields are omitted
+// and the prompts instruct the model never to invent missing details.
+function fmtLangTests(lt: any): string {
+  if (!lt) return "";
+  const parts: string[] = [];
+  if (lt.ielts) parts.push(`IELTS ${lt.ielts}`);
+  if (lt.toefl) parts.push(`TOEFL ${lt.toefl}`);
+  if (lt.gre) parts.push(`GRE ${lt.gre}`);
+  return parts.join(", ");
+}
+export function applicantFacts(p: any): string {
+  const L: string[] = [];
+  const add = (label: string, v: any) => { if (v !== undefined && v !== null && String(v).trim() !== "") L.push(`${label}: ${v}`); };
+  add("Full Name", p.fullName);
+  add("Email", p.email); add("Phone", p.phone); add("Address", p.address);
+  add("Nationality", p.nationality); add("Country of Residence", p.countryOfResidence);
+  add("Gender", p.gender);
+  if (p.currentDegree || p.university) add("Current / Highest Degree", `${p.currentDegree || ""}${p.university ? " — " + p.university : ""}`);
+  if (p.cgpa) add("CGPA", `${p.cgpa} / ${p.cgpaScale || "4.0"}`);
+  add("Graduation Year", p.graduationYear);
+  add("Field of Study", p.fieldOfStudy);
+  add("Thesis", p.thesisTitle);
+  add("Research Interests", p.researchInterests);
+  add("Preferred Master's Fields", p.preferredMasterFields);
+  const lt = fmtLangTests(p.languageTests); if (lt) add("Language / Standardised Tests", lt);
+  add("Preferred Countries", p.preferredCountries);
+  add("Career Goal", p.careerGoal);
+  add("Financial Status", p.financialStatus);
+  add("Family Background", p.familyBackground);
+  if (p.academicRecords?.length) {
+    L.push("Academic Records:");
+    for (const a of p.academicRecords) L.push(`  - ${a.level || ""}: ${a.institution || ""}${a.field ? ` (${a.field})` : ""}${(a.marks_obtained || a.marks) ? ` — ${a.marks_obtained || a.marks}` : ""}`);
+  }
+  if (p.publications?.length) {
+    L.push(`Publications (${p.publications.length}):`);
+    for (const pub of p.publications) L.push(`  - "${pub.title || ""}"${pub.journal ? ` — ${pub.journal}` : ""}${pub.year ? ` (${pub.year})` : ""}${pub.url ? ` ${pub.url}` : ""}`);
+  }
+  return L.join("\n") || "(No profile details provided — ask the applicant to complete their profile.)";
+}
+
+const NO_INVENT = "CRITICAL: Use ONLY the applicant details provided. NEVER invent publications, research, experiences, awards, dates, or qualifications the applicant does not have. If a detail is missing, write around it gracefully — do not fabricate. Write in the applicant's authentic first-person voice.";
+
 // ============================================================
-// COVER LETTER — Human voice, zero AI smell
-// Warm, specific, personal, never templated
+// COVER LETTER — Human voice, zero AI smell, per-user facts
 // ============================================================
 export async function generateCoverLetter(
   scholarshipTitle: string,
@@ -65,71 +107,41 @@ export async function generateCoverLetter(
   country: string,
   profile: any
 ): Promise<string> {
+  const facts = applicantFacts(profile);
   const messages: AIMessage[] = [
     {
       role: "system",
-      content: `You are a senior academic editor who has spent 20 years at Oxford helping international students craft scholarship letters. Your letters are celebrated for one quality above all: they sound unmistakably human. Not polished-human. Real human — with a genuine point of view, a specific memory, a line that surprises the reader.
-
-Your rules:
-1. Never use the word "passion" or "passionate" — it is the most overused word in academic writing.
-2. Never open with "I am writing to..." or "My name is..." — committees have read that ten thousand times.
-3. Use short paragraphs. One idea. One paragraph. White space breathes.
-4. Every claim must have a specific proof. Not "I am hardworking" but "I submitted my research paper three days before my final exams."
-5. Vary sentence length. Long sentence. Then one short one. Rhythm matters.
-6. One moment of vulnerability — nothing creates trust faster than a candidate who admits what they are still learning.
-7. The closing paragraph must feel like a door opening, not a door closing.
-8. Write in the voice of a 23-year-old Pakistani man who is quietly confident — not desperate, not boastful.
-9. Total length: 550–700 words. Every word must earn its place.`,
+      content: `You are a senior academic editor who helps international students craft scholarship motivation letters that sound unmistakably human. Rules:
+1. Never use the word "passion" or "passionate".
+2. Never open with "I am writing to..." or "My name is...".
+3. Short paragraphs. One idea each. White space breathes.
+4. Every claim must have a specific proof drawn from the applicant's real details.
+5. Vary sentence length for rhythm.
+6. One moment of genuine reflection builds trust.
+7. The closing should feel like a door opening.
+8. Write in the applicant's authentic voice — quietly confident, not boastful, not desperate.
+9. 550–700 words. ${NO_INVENT}`,
     },
     {
       role: "user",
-      content: `Write the complete motivation letter for this scholarship application. Use the details below exactly as given — do not invent or hallucinate any facts.
+      content: `Write the complete motivation letter for this scholarship, grounded entirely in the applicant's real details.
 
 SCHOLARSHIP: ${scholarshipTitle}
 AWARDING BODY: ${organization}
 COUNTRY: ${country}
-DATE OF APPLICATION: ${TODAY}
-INTAKE CYCLE: ${INTAKE_YEAR}
 
-APPLICANT FACTS (use all of these, do not invent new ones):
-— Full Name: ${profile.personal.fullName}
-— From: Peshawar, Pakistan — Back Street of PMS Boys 3, Ring Road
-— Current degree: BSc Biotechnology, University of Peshawar
-— CGPA: 2.75 / 4.00 (context: CGPA reflects research immersion, not academic failure)
-— Age: 23 | Nationality: Pakistani
-— Languages: Urdu (mother tongue), Pashto (mother tongue), English (academic working language)
-— Financial background: Need-based. Father is a retired government officer.
-— Contact: Email ${profile.personal.email} | Phone ${profile.personal.phone}
-— Address: ${profile.personal.address}
+APPLICANT DETAILS (use exactly; do not invent anything not listed):
+${facts}
 
-RESEARCH (mention specifically — these are real published papers):
-Publication 1: "Comparative In Silico Analysis of Wild-Type and Mutant-Type Akt2 Gene Mutation (C.58C>T) in Type-2 Diabetes Mellitus" — International Journal of Applied and Clinical Research (IJACR). This used bioinformatics tools to compare protein structure and function changes caused by a point mutation linked to insulin signalling failure in Type-2 diabetes.
-Publication 2: Second peer-reviewed paper published in IJACR.
-Publication 3: Third paper published in Frontiers in Biotechnology and Therapeutics Journal.
-Significance: Three peer-reviewed publications before completing an undergraduate degree is exceptional.
+STRUCTURE (flowing prose, no section headers):
+- Opening: a specific, concrete observation or moment that put them on this path (draw from their field/interests/background).
+- Academic background: what they studied and demonstrated, using their real degree, university, and any research/publications listed. If a CGPA is modest, frame it honestly and move to strengths.
+- Why this scholarship / institution / country: specific to ${organization} in ${country}.
+- Career vision: a concrete picture built on their stated career goal.
+- Financial need (only if relevant to their stated financial status): brief and dignified.
+- Closing: forward-looking, memorable.
 
-CAREER GOAL: ${profile.careerGoal}
-
-LETTER STRUCTURE (follow this, do not add section headers — this is flowing prose):
-
-Opening paragraph: A specific, concrete moment or observation that put him on this path. Not generic. Not "I have always loved science." Something real — could reference the diabetes research, or what life in Peshawar taught him about disease burden.
-
-Second paragraph (academic background): What he studied, what he mastered, what the research actually involved — bioinformatics, protein structure analysis, mutation consequence modelling. Acknowledge the CGPA but frame it correctly: his research output speaks to a different kind of capability.
-
-Third paragraph (why this specific scholarship / institution / country): Specific to ${organization} in ${country}. What does this institution offer that he cannot get elsewhere? Research infrastructure, faculty expertise, methodologies. Show he has done real research about this place.
-
-Fourth paragraph (career vision): Concrete 10-year picture. Master's in ${country} → return to Pakistan → specific contribution to biotech research / healthcare access / disease burden reduction in underserved communities. Not vague dreams.
-
-Fifth paragraph (financial need — brief, dignified, not pitiable): One paragraph. States the reality plainly. Father retired. Resources limited. This scholarship is not just helpful — it is the only path forward for someone of this background.
-
-Closing (2-3 sentences): Forward-looking. Grateful without grovelling. Ends with a line the committee will remember.
-
-Signature block:
-${profile.personal.fullName}
-${profile.personal.email}
-${profile.personal.phone}
-${profile.personal.address}
-${TODAY}`,
+End with a signature block using the applicant's name and contact details from above.`,
     },
   ];
   return await callAI(messages, 4000);
@@ -149,68 +161,36 @@ export async function generatePersonalStatement(
   const messages: AIMessage[] = [
     {
       role: "system",
-      content: `You are a writer who has ghostwritten personal statements for candidates who went on to win Rhodes, Gates Cambridge, and Chevening scholarships. The difference between a statement that gets shortlisted and one that gets archived is this: committees remember people, not achievements.
+      content: `You are a writer who has ghostwritten personal statements for candidates who won Rhodes, Gates Cambridge, and Chevening. Committees remember people, not achievements.
 
-Your technique:
+Technique:
 — Open in a scene, not a declaration.
-— Let the intellectual journey unfold chronologically but selectively — not every year, only the turning points.
-— Use sensory or specific detail at least twice ("the protein structure rotated on my screen", "my father opened the letter in the kitchen").
-— The CGPA issue: do not apologise for it. One sentence. Move forward.
-— Three publications as an undergraduate from a Pakistani state university is remarkable. Make the reader feel the weight of that.
-— Show intellectual curiosity as a living thing — what questions keep him awake? What did the research NOT answer that he now wants to pursue?
-— The closing must connect the personal to the universal: why does his success matter beyond himself?
-— No bullet points, no section headers. Pure flowing prose. First person. Present and past tense.
-— Length: 850–1000 words.
-— The voice must feel 23 years old — intellectually mature but not artificially polished.`,
+— Let the intellectual journey unfold selectively — only the turning points.
+— Use specific, concrete detail drawn from the applicant's real background.
+— If a CGPA is modest, do not apologise — one honest sentence, then move to strengths.
+— If the applicant has publications or research, make the reader feel their weight; if they have none, build the narrative from their studies, interests, and goals instead.
+— Show intellectual curiosity as a living thing — what questions drive them?
+— The closing connects the personal to the universal.
+— No bullet points, no headers. Flowing prose, first person.
+— Length: 850–1000 words. ${NO_INVENT}`,
     },
     {
       role: "user",
-      content: `Write the complete personal statement. Use only these facts — do not invent anything.
+      content: `Write the complete personal statement for this scholarship, grounded entirely in the applicant's real details.
 
 TARGET: ${scholarshipTitle} at ${organization}, ${country}
 FIELD: ${field}
-DATE: ${TODAY}
 
-PERSON:
-Name: ${profile.personal.fullName}
-From: Peshawar, Pakistan (Back Street of PMS Boys 3, Ring Road)
-Degree: BSc Biotechnology, University of Peshawar — CGPA 2.75/4.0
-Age: 23 | Pakistani | Father: retired government officer (need-based)
-Languages: Urdu, Pashto (native), English (academic)
+APPLICANT DETAILS (use exactly; do not invent anything not listed):
+${applicantFacts(profile)}
 
-ACADEMIC PATH:
-— Matric: Shower Model School, Science, 973/1100
-— Intermediate: Government College Peshawar, Pre-Medical, 888/1100
-— BSc Biotechnology: University of Peshawar, CGPA 2.75/4.0
-
-RESEARCH (this is the heart of the statement — go deep here):
-Published Paper 1: "Comparative In Silico Analysis of Wild-Type and Mutant-Type Akt2 Gene Mutation (C.58C>T) in Type-2 Diabetes Mellitus" — IJACR. Core method: used computational bioinformatics tools (NCBI, UniProt, PDB, SWISS-MODEL, PyMOL) to model the structural and functional consequences of a single nucleotide mutation in Akt2, a serine/threonine kinase central to insulin signalling. Found structural instability differences that may contribute to insulin resistance in Type-2 diabetes. Published in peer-reviewed journal while still an undergraduate.
-Published Paper 2: IJACR — second peer-reviewed article (biotechnology)
-Published Paper 3: Frontiers in Biotechnology and Therapeutics Journal — third peer-reviewed article
-
-Research significance: Three publications before graduating. In a setting where most undergraduates have no publications at all. This was done with limited lab access, using open-source computational tools, from Pakistan.
-
-INTELLECTUAL INTERESTS:
-— Molecular mechanisms of metabolic disease (diabetes, obesity, cancer)
-— Computational biology / bioinformatics as a tool for low-resource settings
-— How disease manifests differently in South Asian populations
-— ${field} specifically and what ${organization}'s research environment offers
-
-CAREER GOAL: ${profile.careerGoal}
-
-STATEMENT STRUCTURE (no headers — continuous prose):
-
-Opening scene or observation (1 paragraph): Start in the middle of something — a research moment, a family observation, a conversation that crystallised why this work matters. Not "I have always been interested in biology."
-
-His intellectual development (2 paragraphs): How he moved from a general science student to a published bioinformatics researcher. What he discovered along the way. The Akt2 paper — what it meant to him intellectually, not just academically. What the research left unresolved — what question now drives him.
-
-Research in context (1 paragraph): Three published papers from a Pakistani state university with limited computational infrastructure. What this took. What it demonstrates about persistence and resourcefulness. Do NOT make it sound like a hardship story — make it sound like drive.
-
-Where he is going (1-2 paragraphs): Master's in ${field} at ${organization}. Why this specific environment. What he wants to research. How it builds on the Akt2 work. The specific scientific questions he wants to pursue in the next 2–3 years.
-
-Why it matters beyond himself (1 paragraph): Pakistan's disease burden. The gap in biotechnology capacity in developing countries. Not just "I want to help people" — specific: what he would actually build, establish, or change when he returns.
-
-Closing (1 paragraph): Quiet confidence. The reader should feel: this is a person who will make good on this opportunity.`,
+STRUCTURE (continuous prose, no headers):
+- Opening scene: start in the middle of something real from their background — not "I have always been interested in...".
+- Intellectual development (2 paragraphs): how they arrived at this field, what they studied and did (use their real degree, and their research/publications only if listed above), and what question now drives them.
+- Context (1 paragraph): what their journey took — persistence and drive, framed positively, not as a hardship story.
+- Where they are going (1–2 paragraphs): the ${field} programme at ${organization}, why this environment, what they want to research next, tied to their stated career goal.
+- Why it matters beyond themselves (1 paragraph): the specific contribution they intend to make.
+- Closing (1 paragraph): quiet confidence.`,
     },
   ];
   return await callAI(messages, 4000);
@@ -240,72 +220,25 @@ export async function generateResume(
     },
     {
       role: "user",
-      content: `Create the complete academic CV. Use only these facts.
+      content: `Create the complete academic CV, using ONLY the applicant's real details below.
 
 TARGET SCHOLARSHIP: ${scholarshipTitle}
 FIELD: ${scholarshipField}
-DATE: ${TODAY}
 
-PERSONAL DETAILS:
-Name: ${profile.personal.fullName}
-Email: ${profile.personal.email}
-Phone: ${profile.personal.phone}
-Address: ${profile.personal.address}
-Nationality: Pakistani
-Date of Birth: ~2002 (Age 23)
-ORCID / ResearchGate: Include placeholder — "Available on request"
+APPLICANT DETAILS (use exactly; include only sections that have data — do not invent):
+${applicantFacts(profile)}
 
-EDUCATION (reverse chronological):
-1. B.Sc. Biotechnology
-   University of Peshawar, Pakistan | 2020 – 2024
-   Cumulative GPA: 2.75 / 4.00
-   Relevant coursework: Molecular Biology, Genetics, Microbiology, Biochemistry, Cell Biology, Immunology, Bioinformatics, Pharmacology, Biostatistics, Research Methodology, Industrial Biotechnology, Environmental Biotechnology
+CV SECTIONS (in this order; OMIT any section that has no data — never fabricate to fill it):
+1. Header — full name, then a contact line (email / phone / address / nationality).
+2. Education — reverse chronological, from the academic records above (level, institution, field, marks or CGPA, years).
+3. Research Publications — APA-style citations of ONLY the publications listed above. If none are listed, omit this section entirely.
+4. Research Experience / Projects — only from their thesis, research interests, or listed publications.
+5. Technical & Research Skills — grouped by category, appropriate to their stated field of study.
+6. Languages — from their profile / language tests if available.
+7. Achievements — only real ones inferable from the data above.
+8. References — a single line: "Available upon request."
 
-2. Intermediate (F.Sc. Pre-Medical)
-   Government College Peshawar, Pakistan | 2018 – 2020
-   Marks: 888 / 1100
-
-3. Secondary School Certificate (Matric — Science)
-   Shower Model School, Peshawar, Pakistan | 2016 – 2018
-   Marks: 973 / 1100
-
-RESEARCH PUBLICATIONS (APA-style citations):
-1. Shah, S. A. A. (2024). Comparative In Silico Analysis of Wild-Type and Mutant-Type Akt2 Gene Mutation (C.58C>T) in Type-2 Diabetes Mellitus. *International Journal of Applied and Clinical Research (IJACR)*. https://www.ijacr.com/index.php/home/article/view/21
-
-2. Shah, S. A. A. (2024). [Second research article]. *International Journal of Applied and Clinical Research (IJACR)*. https://www.ijacr.com/index.php/home/article/view/21
-
-3. Shah, S. A. A. (2024). [Third research article]. *Frontiers in Biotechnology and Therapeutics*. https://fbtjournal.com/index.php/fbt/article/view/177
-
-RESEARCH EXPERIENCE:
-Undergraduate Researcher — In Silico Molecular Analysis
-Department of Biotechnology, University of Peshawar | 2022 – 2024
-— Conducted comparative in silico analysis of wild-type and C.58C>T mutant Akt2 protein using bioinformatics pipelines
-— Retrieved protein sequences from UniProt and NCBI; used PDB for structural data
-— Built 3D homology models using SWISS-MODEL; visualised protein conformations in PyMOL
-— Predicted mutation pathogenicity using SIFT, PolyPhen-2, and MutPred tools
-— Performed molecular docking to assess binding affinity changes due to mutation
-— Produced 3 peer-reviewed journal publications from undergraduate research — an uncommon achievement in the Pakistani university context
-
-TECHNICAL SKILLS:
-Bioinformatics & Computational: BLAST, ClustalW, NCBI databases, UniProt, PDB, SWISS-MODEL, PyMOL, I-TASSER, SIFT, PolyPhen-2, MutPred, MODELLER, AutoDock Vina
-Wet Laboratory: PCR, Gel Electrophoresis, DNA Extraction & Purification, ELISA, Plate Counting, Microscopy, Cell Culture Techniques, Buffer Preparation, Aseptic Technique
-Data & Writing: Microsoft Office Suite, R (basic), SPSS, scientific report writing, literature review, APA/Vancouver referencing
-
-LANGUAGES:
-Urdu — Native proficiency
-Pashto — Native proficiency
-English — Full professional proficiency (academic reading, writing, oral communication)
-
-ACADEMIC ACHIEVEMENTS:
-— Published 3 peer-reviewed research articles as an undergraduate researcher (2022–2024)
-— Completed BSc Biotechnology with research focus, University of Peshawar (2024)
-— Strong academic progression: 973/1100 (Matric), 888/1100 (Intermediate)
-
-PERSONAL COMPETENCIES:
-Scientific reasoning | Systematic literature review | Independent research design | Academic writing and editing | Cross-cultural communication | Problem solving under resource constraints | Collaborative laboratory work
-
-REFERENCES:
-Available upon request from thesis supervisor and departmental faculty at University of Peshawar.`,
+Clean and scannable. Do NOT invent coursework, tools, publications, awards, or experience the applicant's real details don't support.`,
     },
   ];
   return await callAI(messages, 4000);
@@ -323,90 +256,38 @@ export async function generateResearchProposal(
   const messages: AIMessage[] = [
     {
       role: "system",
-      content: `You are writing a Master's research proposal for a scholarship application committee composed of senior scientists. The proposal must demonstrate:
-1. A command of current literature — mention real journals, real methodological debates, real gaps
-2. A clear logical chain: disease burden → molecular mechanism → specific gap → proposed study → expected contribution
-3. Feasibility — the methods must be achievable within 18-24 months with standard university resources
-4. Originality — not a replication study, but a natural extension of prior work
-5. No vague statements — every claim has a specific reference or explanation
-6. Scientific writing style — third person for background, first person only for objectives and the applicant's prior work
-7. REFERENCES — CRITICAL ACCURACY RULE: Do NOT fabricate citations. Only list references you are confident are REAL, well-known published works (correct title, authors, journal, year). Every reference will be automatically checked against the Crossref scholarly database and any that cannot be verified will be removed. It is far better to list 4 genuinely real references than 10 invented ones. Never invent DOIs, authors, years, or journal names.
-— Length: 1100–1400 words of scientific content (excluding title and reference list)`,
+      content: `You are writing a Master's research proposal for a scholarship committee of senior academics. The proposal must demonstrate:
+1. Command of current literature — mention real journals and real debates in the field.
+2. A clear logical chain: context/problem → specific gap → proposed study → expected contribution.
+3. Feasibility — methods achievable within 18–24 months with standard university resources.
+4. Originality — a natural extension of the applicant's stated interests, not a replication.
+5. No vague statements — every claim has a specific reference or explanation.
+6. Scientific writing style — third person for background, first person for objectives and the applicant's own prior work.
+7. REFERENCES — CRITICAL: Do NOT fabricate citations. Only list references you are confident are REAL, well-known published works. Every reference is automatically checked against the Crossref database and unverifiable ones are removed. Better 4 real references than 10 invented. Never invent DOIs, authors, years, or journals.
+— Length: 1100–1400 words (excluding title and reference list).`,
     },
     {
       role: "user",
-      content: `Write the complete research proposal. Use these facts — do not invent background about the applicant.
+      content: `Write the complete Master's research proposal in ${field}, grounded in the applicant's real background.
 
 SCHOLARSHIP: ${scholarshipTitle}
 RESEARCH FIELD: ${field}
-APPLICANT: ${profile.personal.fullName}
-DATE: ${TODAY}
 
-APPLICANT'S RESEARCH BACKGROUND:
-— BSc Biotechnology, University of Peshawar (CGPA 2.75/4.0)
-— Published paper: "Comparative In Silico Analysis of Wild-Type and Mutant-Type Akt2 Gene Mutation (C.58C>T) in Type-2 Diabetes Mellitus" — IJACR
-  · Core finding: The C.58C>T missense mutation in Akt2 alters protein stability and likely disrupts the Akt2-mediated phosphorylation of downstream insulin signalling targets (IRS-1, GSK-3β, FOXO1)
-  · Methods used: SWISS-MODEL, PyMOL, SIFT, PolyPhen-2, MutPred, AutoDock Vina
-— 3 total peer-reviewed publications as an undergraduate
-— Proficiency in: NCBI, UniProt, PDB, BLAST, molecular modelling, docking
+APPLICANT DETAILS (use exactly; build on their real background — never invent prior work, publications, or methods they don't have):
+${applicantFacts(profile)}
 
-PROPOSAL STRUCTURE (use these section headers, numbered):
-
-1. TITLE
-   Develop a specific, scientifically accurate title for a Master's research project in ${field} that builds logically from the Akt2/diabetes work. The natural extension could be:
-   — Expanding from Akt2 to other kinase pathways implicated in ${field}
-   — Moving from in silico to molecular dynamics simulation
-   — Investigating mutation patterns in South Asian population genomes
-   — Or a related direction in ${field} that connects to computational structural biology
-
-2. ABSTRACT (150–200 words)
-   Problem → gap → hypothesis → methods → expected outcomes. Written in past tense (as if already done — standard grant abstract format). Precise.
-
-3. INTRODUCTION AND BACKGROUND (250–300 words)
-   — Epidemiological data: global burden, South Asian prevalence
-   — Molecular basis: which pathways, which proteins, current understanding
-   — Role of computational approaches in modern structural biology
-   — Natural connection to applicant's prior Akt2 work
-   — 3–4 real references (use journal names and plausible author names/years)
-
-4. PROBLEM STATEMENT (100–120 words)
-   — Precisely define the gap in current knowledge
-   — Why existing studies have not answered this question
-   — Why the gap matters (clinically and scientifically)
-
-5. RESEARCH OBJECTIVES
-   Main Objective (1 sentence — broad aim)
-   Specific Objectives (4–5 numbered, each starting with a measurable verb: "To identify...", "To characterise...", "To validate...", "To compare...", "To model...")
-
-6. RESEARCH QUESTIONS (4 specific, answerable questions directly mapped to the objectives)
-
-7. LITERATURE REVIEW (280–350 words)
-   — Recent key studies (2018–2025 range) in ${field}
-   — What they found and what they missed
-   — How this proposal addresses those gaps
-   — 8–10 references with journal names and years (e.g. "Smith et al., 2022 — Nature Communications")
-
-8. METHODOLOGY (300–380 words)
-   Detailed and credible:
-   Phase 1 (Months 1–6): Data collection — NCBI, UniProt, GEO, TCGA databases; selection criteria
-   Phase 2 (Months 7–12): Computational analysis — specific tools (SWISS-MODEL, GROMACS or AMBER for MD simulation, AutoDock Vina, STRING, DAVID for pathway analysis)
-   Phase 3 (Months 13–18): Validation — in vitro methods if applicable; cell line work; statistical analysis (ANOVA, ROC curves)
-   Phase 4 (Months 19–24): Synthesis, manuscript preparation, thesis writing
-   Ethical considerations: note any IRB/data use requirements
-
-9. EXPECTED OUTCOMES AND DELIVERABLES
-   — 3–4 specific, measurable outcomes
-   — At least 1 peer-reviewed publication targeted
-   — Contribution to the field stated precisely
-
-10. SIGNIFICANCE AND IMPACT (100–120 words)
-    — Scientific significance
-    — Clinical/translational relevance
-    — Specific importance for South Asian / Pakistani populations and low-resource healthcare settings
-    — How this builds the applicant's research programme towards a PhD
-
-11. REFERENCES
-    List ONLY references you are confident are real, verifiable published works (APA format). Each will be checked against Crossref — invented references will be deleted and shown as "Reference could not be verified." Prefer fewer real references over many fabricated ones. Do not invent DOIs, authors, years, or journals.`,
+PROPOSAL STRUCTURE (numbered section headers):
+1. TITLE — a specific, scientifically accurate title for a Master's project in ${field} connected to the applicant's stated research interests (and prior work, if any).
+2. ABSTRACT (150–200 words) — problem → gap → hypothesis → methods → expected outcomes.
+3. INTRODUCTION & BACKGROUND (250–300 words) — field context, current understanding, the gap; 3–4 REAL references.
+4. PROBLEM STATEMENT (100–120 words) — the precise knowledge gap and why it matters.
+5. RESEARCH OBJECTIVES — one main objective + 4–5 specific objectives (measurable verbs).
+6. RESEARCH QUESTIONS — 4, mapped to the objectives.
+7. LITERATURE REVIEW (280–350 words) — recent key studies in ${field}, what they found/missed; 6–8 REAL references.
+8. METHODOLOGY (300–380 words) — a credible phased plan (Months 1–6, 7–12, 13–18, 19–24) using methods appropriate to ${field}; note any ethical/data considerations.
+9. EXPECTED OUTCOMES & DELIVERABLES — 3–4 measurable outcomes.
+10. SIGNIFICANCE & IMPACT (100–120 words) — scientific and practical relevance, and how it advances the applicant's path.
+11. REFERENCES — APA format. ${NO_INVENT} Only list references you are confident are REAL; each is checked against Crossref and unverifiable ones are removed.`,
     },
   ];
   return await callAI(messages, 4000);

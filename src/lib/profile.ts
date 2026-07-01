@@ -79,6 +79,42 @@ export const USER_PROFILE = {
   },
 };
 
+// Normalize a Supabase profile row (+ publications/academic records) into a
+// flat object the document generators consume. Everything is per-user now.
+export function normalizeProfile(row: any, pubs: any[] = [], acad: any[] = []): any {
+  row = row || {};
+  return {
+    fullName: row.full_name || "",
+    email: row.email || "",
+    phone: row.phone || "",
+    address: row.address || "",
+    city: row.city || "",
+    nationality: row.nationality || "",
+    countryOfResidence: row.country_of_residence || "",
+    gender: row.gender || "",
+    dateOfBirth: row.date_of_birth || "",
+    currentDegree: row.current_degree || "",
+    university: row.university || "",
+    cgpa: row.cgpa || "",
+    cgpaScale: row.cgpa_scale || "4.0",
+    graduationYear: row.graduation_year || "",
+    fieldOfStudy: row.field_of_study || "",
+    thesisTitle: row.thesis_title || "",
+    researchInterests: row.research_interests || "",
+    preferredMasterFields: row.preferred_master_fields || "",
+    languageTests: row.language_tests || {},
+    preferredCountries: row.preferred_countries || "",
+    fundingType: row.funding_type || "",
+    degreeLevel: row.degree_level || "Masters",
+    researchAreas: row.research_areas || "",
+    careerGoal: row.career_goal || "",
+    financialStatus: row.financial_status || "",
+    familyBackground: row.family_background || "",
+    publications: Array.isArray(pubs) ? pubs : [],
+    academicRecords: Array.isArray(acad) ? acad : [],
+  };
+}
+
 export function buildProfileSummary(): string {
   return `
 CANDIDATE PROFILE (Today: ${CURRENT_DATE}):
