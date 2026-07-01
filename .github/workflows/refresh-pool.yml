@@ -19,12 +19,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger pool refresh
+        env:
+          GETSCO_URL: ${{ secrets.GETSCO_URL }}
+          REFRESH_SECRET: ${{ secrets.REFRESH_SECRET }}
         run: |
+          if [ -z "$GETSCO_URL" ] || [ -z "$REFRESH_SECRET" ]; then
+            echo "::warning::Setup incomplete — add GETSCO_URL and REFRESH_SECRET in repo Settings -> Secrets -> Actions. Skipping refresh."
+            exit 0
+          fi
           echo "Refreshing scholarship pool..."
           code=$(curl -s -o /tmp/out.json -w "%{http_code}" -X POST \
-            "${{ secrets.GETSCO_URL }}/api/scholarships/refresh-pool" \
-            -H "x-refresh-token: ${{ secrets.REFRESH_SECRET }}" \
-            --max-time 120)
+            "$GETSCO_URL/api/scholarships/refresh-pool" \
+            -H "x-refresh-token: $REFRESH_SECRET" \
+            --max-time 170)
           echo "HTTP $code"
           cat /tmp/out.json
           if [ "$code" -ge 400 ]; then echo "Refresh failed"; exit 1; fi

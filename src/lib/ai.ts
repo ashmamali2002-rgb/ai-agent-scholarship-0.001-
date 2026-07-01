@@ -23,7 +23,7 @@ export interface AIMessage {
   content: string;
 }
 
-export async function callAI(messages: AIMessage[], maxTokens: number = 4000): Promise<string> {
+export async function callAI(messages: AIMessage[], maxTokens: number = 4000, temperature: number = 0.72): Promise<string> {
   try {
     const response = await fetchWithRetry(GROQ_API_URL, {
       method: "POST",
@@ -35,10 +35,10 @@ export async function callAI(messages: AIMessage[], maxTokens: number = 4000): P
         model: MODEL,
         messages,
         max_tokens: maxTokens,
-        temperature: 0.72,
-        top_p: 0.92,
-        frequency_penalty: 0.25,
-        presence_penalty: 0.15,
+        temperature,
+        top_p: 0.95,
+        frequency_penalty: 0.35,
+        presence_penalty: 0.25,
       }),
     }, { label: "groq", retries: 2, timeoutMs: 60000 });
 
@@ -98,6 +98,18 @@ export function applicantFacts(p: any): string {
 
 const NO_INVENT = "CRITICAL: Use ONLY the applicant details provided. NEVER invent publications, research, experiences, awards, dates, or qualifications the applicant does not have. If a detail is missing, write around it gracefully — do not fabricate. Write in the applicant's authentic first-person voice.";
 
+// Style rules that strip the tell-tale patterns of machine writing.
+const HUMANIZE = `
+WRITING STYLE — this must read like a real person wrote it, not a language model:
+- BANNED words/phrases: "delve", "tapestry", "journey", "furthermore", "moreover", "in conclusion", "in today's world", "ever-evolving", "landscape", "testament to", "not only... but also", "It is worth noting", "plays a pivotal/crucial role", "foster", "underscore", "showcase", "leverage".
+- Never open consecutive paragraphs the same way. Never use three parallel phrases in a row.
+- Mix sentence lengths hard: some long winding sentences with a clause or two, then a blunt short one. Even a fragment, occasionally.
+- Prefer plain verbs over fancy ones (use "shows" not "demonstrates", "start" not "commence").
+- Allow small natural imperfections: an occasional sentence starting with "And" or "But", a parenthetical aside, a specific mundane detail.
+- One idea should get slightly more space than it strictly needs — humans linger; models allocate evenly.
+- No bullet-point rhythm in prose. No summary sentence that restates the paragraph.
+- Sound like a smart student writing carefully in their second language's academic register — precise but not glossy.`;
+
 // ============================================================
 // COVER LETTER — Human voice, zero AI smell, per-user facts
 // ============================================================
@@ -120,7 +132,8 @@ export async function generateCoverLetter(
 6. One moment of genuine reflection builds trust.
 7. The closing should feel like a door opening.
 8. Write in the applicant's authentic voice — quietly confident, not boastful, not desperate.
-9. 550–700 words. ${NO_INVENT}`,
+9. 550–700 words. ${NO_INVENT}
+${HUMANIZE}`,
     },
     {
       role: "user",
@@ -144,7 +157,7 @@ STRUCTURE (flowing prose, no section headers):
 End with a signature block using the applicant's name and contact details from above.`,
     },
   ];
-  return await callAI(messages, 4000);
+  return await callAI(messages, 4000, 0.9); // higher temperature = more human variance
 }
 
 // ============================================================
@@ -172,7 +185,8 @@ Technique:
 — Show intellectual curiosity as a living thing — what questions drive them?
 — The closing connects the personal to the universal.
 — No bullet points, no headers. Flowing prose, first person.
-— Length: 850–1000 words. ${NO_INVENT}`,
+— Length: 850–1000 words. ${NO_INVENT}
+${HUMANIZE}`,
     },
     {
       role: "user",
@@ -193,7 +207,7 @@ STRUCTURE (continuous prose, no headers):
 - Closing (1 paragraph): quiet confidence.`,
     },
   ];
-  return await callAI(messages, 4000);
+  return await callAI(messages, 4000, 0.9); // higher temperature = more human variance
 }
 
 // ============================================================
